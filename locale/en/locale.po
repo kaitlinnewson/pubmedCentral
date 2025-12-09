@@ -1,0 +1,86 @@
+msgid "plugins.importexport.pmc.displayName"
+msgstr "PubMed Central Export Plugin"
+
+msgid "plugins.importexport.pmc.ftpLibraryMissing"
+msgstr ""
+"<blockquote style=\"border: 1px solid; padding: 1em;\"><strong>⚠️ Warning:</strong> The <code>league/flysystem-ftp</code> library is missing from your server. To install it, run:\n"
+"<pre><code>composer -d lib/pkp require league/flysystem-ftp</code></pre>"
+"...or upgrade to a newer release of OJS. Until this is resolved, <strong>FTP deposits will not work</strong>. SFTP deposits can still be used.</blockquote>"
+
+msgid "plugins.importexport.pmc.description"
+msgstr ""
+"This plugin may be used to export your journal content to <a href=\"https://www.pmc.ncbi.nlm.nih.gov.org\" target=\"_blank\">PubMed Central</a>. "
+"Content can be downloaded for later delivery to PubMed Central, or sent to your account on the PubMed Central server by "
+"configuring your credentials below."
+
+msgid "plugins.importexport.pmc.description.short"
+msgstr "This plugin may be used to export your journal content to PubMed Central."
+
+msgid "plugins.importexport.pmc.endpoint.type"
+msgstr "Server Type"
+
+msgid "plugins.importexport.pmc.endpoint.hostname"
+msgstr "Hostname"
+
+msgid "plugins.importexport.pmc.endpoint.username"
+msgstr "Username"
+
+msgid "plugins.importexport.pmc.endpoint.password"
+msgstr "Password"
+
+msgid "plugins.importexport.pmc.endpoint.path"
+msgstr "Path"
+
+msgid "plugins.importexport.pmc.endpoint.private_key"
+msgstr "Private Key Path"
+
+msgid "plugins.importexport.pmc.endpoint.keyphrase"
+msgstr "Keyphrase (optional)"
+
+msgid "plugins.importexport.pmc.endpoint.port"
+msgstr "Port (optional, SFTP defaults to 22, FTP to 21)"
+
+msgid "plugins.importexport.pmc.endpoint"
+msgstr "Endpoint"
+
+msgid "plugins.importexport.pmc.export.issues"
+msgstr "Export Issues"
+
+msgid "plugins.importexport.pmc.export.ftp"
+msgstr "Deposit Issues"
+
+msgid "plugins.importexport.pmc.export.success"
+msgstr "The export was executed successfully!"
+
+msgid "plugins.importexport.pmc.export.failure.connection"
+msgstr "Failed to connect to the FTP server at {$host}."
+
+msgid "plugins.importexport.pmc.export.failure.credentials"
+msgstr "Failed to connect to the FTP server with the given credentials."
+
+msgid "plugins.importexport.pmc.export.failure.settings"
+msgstr "To export the issues to PubMed Central you must setup the credentials in the settings tab."
+
+msgid "plugins.importexport.pmc.export.failure.loadingIssue"
+msgstr "Failed to load the issue with ID #{$issueId}."
+
+msgid "plugins.importexport.pmc.export.failure.creatingFile"
+msgstr "Failed to create zip file. The system returned an error: '{$param}'."
+
+msgid "plugins.importexport.pmc.settings.form.jatsImportedOnly"
+msgstr "Only allow exports for articles with uploaded JATS XML files. If not enabled, the plugin will try to "
+"generate JATS content if no JATS XML file is present."
+
+msgid "plugins.importexport.pmc.settings.form.nlmTitle"
+msgstr "NLM Title Abbreviation"
+
+msgid "plugins.importexport.pmc.settings.form.nlmTitle.description"
+msgstr ""
+"The NLM Title Abbreviation for the journal. If set, this will be used for package and file naming. "
+"If you do not know the abbreviation, <a href=\"https://pmc.ncbi.nlm.nih.gov/journals/\">search the Pubmed Central journals list</a>."
+
+msgid "plugins.generic.pmc.displayName"
+msgstr "Pubmed Central Plugin"
+
+msgid "plugins.generic.pmc.description"
+msgstr "Exports articles or article versions to Pubmed Central."
