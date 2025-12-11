@@ -16,38 +16,30 @@ msgstr ""
 msgid "plugins.importexport.pmc.description.short"
 msgstr "This plugin may be used to export your journal content to PubMed Central."
 
-msgid "plugins.importexport.pmc.endpoint.type"
+msgid "plugins.importexport.pmc.type"
 msgstr "Server Type"
 
-msgid "plugins.importexport.pmc.endpoint.hostname"
-msgstr "Hostname"
+msgid "plugins.importexport.pmc.host"
+msgstr "Host"
 
-msgid "plugins.importexport.pmc.endpoint.username"
+msgid "plugins.importexport.pmc.username"
 msgstr "Username"
 
-msgid "plugins.importexport.pmc.endpoint.password"
+msgid "plugins.importexport.pmc.password"
 msgstr "Password"
 
-msgid "plugins.importexport.pmc.endpoint.path"
+msgid "plugins.importexport.pmc.path"
 msgstr "Path"
 
-msgid "plugins.importexport.pmc.endpoint.private_key"
-msgstr "Private Key Path"
-
-msgid "plugins.importexport.pmc.endpoint.keyphrase"
-msgstr "Keyphrase (optional)"
-
-msgid "plugins.importexport.pmc.endpoint.port"
+msgid "plugins.importexport.pmc.port"
 msgstr "Port (optional, SFTP defaults to 22, FTP to 21)"
 
 msgid "plugins.importexport.pmc.endpoint"
-msgstr "Endpoint"
+msgstr "Connection Details"
 
-msgid "plugins.importexport.pmc.export.issues"
-msgstr "Export Issues"
-
-msgid "plugins.importexport.pmc.export.ftp"
-msgstr "Deposit Issues"
+msgid "plugins.importexport.pmc.downloadWarning"
+msgstr "Downloaded packages should not sent to Pubmed Central. Please unzip the packages first, "
+"and send the article packages to Pubmed Central."
 
 msgid "plugins.importexport.pmc.export.success"
 msgstr "The export was executed successfully!"
@@ -76,7 +68,7 @@ msgstr "NLM Title Abbreviation"
 
 msgid "plugins.importexport.pmc.settings.form.nlmTitle.description"
 msgstr ""
-"The NLM Title Abbreviation for the journal. If set, this will be used for package and file naming. "
+"The NLM Title Abbreviation for the journal. "
 "If you do not know the abbreviation, <a href=\"https://pmc.ncbi.nlm.nih.gov/journals/\">search the Pubmed Central journals list</a>."
 
 msgid "plugins.generic.pmc.displayName"

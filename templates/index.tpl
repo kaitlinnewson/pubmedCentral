@@ -95,6 +95,9 @@
 									{/foreach}
 								</ul>
 							{/fbvFormSection}
+							{fbvFormSection}
+								{translate key="plugins.importexport.pmc.downloadWarning"}
+							{/fbvFormSection}
 						{/if}
 						{/fbvFormArea}
 					</form>

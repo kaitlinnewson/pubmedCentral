@@ -81,13 +81,6 @@ class PubmedCentralSettingsForm extends PubObjectsExportSettingsForm
         $contextId = $this->contextId;
         parent::execute(...$functionArgs);
         foreach ($this->getFormFields() as $fieldName => $fieldType) {
-            if ($fieldName == 'endpoint') {
-                // @todo remove if we determine PMC only uses password
-                $endpoint = $this->getData('endpoint');
-                if (array_key_exists('private_key', $endpoint) && !is_file($endpoint['private_key'])) {
-                    throw new Exception('Invalid private key');
-                }
-            }
             $plugin->updateSetting($contextId, $fieldName, $this->getData($fieldName), $fieldType);
         }
     }
@@ -95,18 +88,28 @@ class PubmedCentralSettingsForm extends PubObjectsExportSettingsForm
     public function getFormFields(): array
     {
         return [
-            'endpoint' => 'array',
             'jatsImported' => 'bool',
-            'nlmTitle' => 'string'
+            'nlmTitle' => 'string',
+            'type' => 'string',
+            'host' => 'string',
+            'port' => 'string', // @todo check
+            'path' => 'string',
+            'username' => 'string',
+            'password' => 'string'
         ];
     }
 
     public function isOptional(string $settingName): bool
     {
         return in_array($settingName, [
-            'endpoint',
             'jatsImported',
-            'nlmTitle'
+            'nlmTitle',
+            'type',
+            'host',
+            'port',
+            'path',
+            'username',
+            'password'
         ]);
     }
 }

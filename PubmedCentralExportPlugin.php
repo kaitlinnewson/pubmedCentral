@@ -67,28 +67,20 @@ class PubmedCentralExportPlugin extends PubObjectsExportPlugin implements HasTas
     }
 
     /**
-     * Create a filename for files created in the plugin.
+     * Create a filename for files created in the plugin, removing any invalid characters.
      */
-    private function buildFileName(string $articleId, bool $ts = false, ?string $fileExtension = null): string
+    private function buildFileName(?string $articleId = null, bool $ts = false, ?string $fileExtension = null): string
     {
         // @todo add setting to select vol/issue naming vs. continuous pub naming?
         $locale = $this->context->getData('primaryLocale');
-        $acronym = $this->nlmTitle($this->context, true) ?? $this->context->getData('acronym', $locale);
+        $acronym = preg_replace('/[^a-zA-Z0-9]/', '', $this->context->getData('acronym', $locale));
         $timeStamp = date('YmdHis');
-        error_log('time stamp: ' . $timeStamp);
-        return $acronym . '-' . $articleId .
-               ($ts ? '-' . $timeStamp : '') .
-               ($fileExtension ? '.' . $fileExtension : '');
-    }
-
-    /**
-     * Create a filename for the exported zip file when downloading.
-     */
-    private function buildZipFilename(): string
-    {
-        $locale = $this->context->getData('primaryLocale');
-        $acronym = $this->nlmTitle($this->context, true) ?? $this->context->getData('acronym', $locale);
-        return $acronym . '-' . date('YmdHis') . '.zip';
+        return strtolower(
+            $acronym .
+            ($articleId ? '-' . $articleId : '') .
+            ($ts ? '-' . $timeStamp : '') .
+            ($fileExtension ? '.' . $fileExtension : '')
+        );
     }
 
     /**
@@ -104,29 +96,11 @@ class PubmedCentralExportPlugin extends PubObjectsExportPlugin implements HasTas
         $noValidation = null,
         $shouldRedirect = true
     ) {
-        // OLD CODE FROM PORTICO
-//        $templateManager = TemplateManager::getManager();
-//        try {
-//            // create zip file
-//            $path = $this->createZipForIssues($objects);
-//            try {
-//                if ($request->getUserVar('type') == 'ftp') {
-//                    $this->depositXml($objects, $this->context, $path);
-//                    $templateManager->assign('pmcSuccessMessage', __('plugins.importexport.pmc.export.success'));
-//                } else {
-//                    $this->download($path);
-//                }
-//            } finally {
-//                unlink($path);
-//            }
-//        } catch (Exception $e) {
-//            $templateManager->assign('pmcErrorMessage', $e->getMessage());
-//        }
-
         $context = $request->getContext();
         if ($request->getUserVar(PubObjectsExportPlugin::EXPORT_ACTION_DEPOSIT)) {
             $resultErrors = [];
             $paths = $this->createZip($objects, $context);
+            // @todo move creation of zip into deposit? easier to track objects.
             $result = $this->depositXML($objects, $context, $paths);
             if (is_array($result)) {
                 $resultErrors[] = $result;
@@ -161,7 +135,7 @@ class PubmedCentralExportPlugin extends PubObjectsExportPlugin implements HasTas
         } elseif ($request->getUserVar(PubObjectsExportPlugin::EXPORT_ACTION_EXPORT)) {
             $path = $this->createZipCollection($objects, $context);
             $fileManager = new FileManager();
-            $fileManager->downloadByPath($path, 'application/zip', false, $this->buildZipFilename());
+            $fileManager->downloadByPath($path, 'application/zip', false, $this->buildFileName(null, true, 'zip'));
             $fileManager->deleteByPath($path);
         } else {
             parent::executeExportAction(
@@ -182,7 +156,7 @@ class PubmedCentralExportPlugin extends PubObjectsExportPlugin implements HasTas
      * @param Submission $object single published submission, publication, issue or galley
      * @param string $filter
      * @param Journal $context
-     * @param bool $noValidation If set to true no XML validation will be done
+     * @param bool $noValidation If set to true, no XML validation will be done
      * @param null|mixed $outputErrors
      *
      * @return string|array XML document or error message.
@@ -237,19 +211,7 @@ class PubmedCentralExportPlugin extends PubObjectsExportPlugin implements HasTas
     }
 
     /**
-     * Get deposit status setting name.
-     *
-     * @return string
-     */
-    public function getDepositStatusSettingName(): string
-    {
-        return $this->getPluginSettingsPrefix() . '::status';
-    }
-
-    /**
-     * Get the plugin ID used as plugin settings prefix.
-     *
-     * @return string
+     * @copydoc ImportExportPlugin::getPluginSettingsPrefix()
      */
     public function getPluginSettingsPrefix(): string
     {
@@ -257,7 +219,7 @@ class PubmedCentralExportPlugin extends PubObjectsExportPlugin implements HasTas
     }
 
     /**
-     * Get a list of additional setting names that should be stored with the objects.
+     * @copydoc PubObjectsExportPlugin::getPluginSettingsPrefix()
      */
     public function getObjectAdditionalSettings(): array
     {
@@ -268,94 +230,93 @@ class PubmedCentralExportPlugin extends PubObjectsExportPlugin implements HasTas
     }
 
     /**
-     * Get the deposit endpoint details.
-     */
-    public function getEndpoint(int $contextId): array
-    {
-        error_log('getEndpoint: ' . print_r($this->getSetting($contextId, 'endpoint'), true));
-        return (array) $this->getSetting($contextId, 'endpoint');
-    }
-
-
-    /**
      * Get the JATS import setting value.
      */
-    public function jatsImportedOnly(context $context): bool
+    public function jatsImportedOnly(Context $context): bool
     {
         return ($this->getSetting($context->getId(), 'jatsImported') == 1);
     }
 
     /**
-     * Get the NLM title setting.
-     *
-     * @param bool $forName If we need to use this string for a filename.
+     * Get the NLM title setting value.
      */
-    public function nlmTitle(context $context, bool $forName = false): string
+    public function nlmTitle(Context $context): string
     {
-        if ($forName) {
-            return strtolower(
-                str_replace(' ', '', $this->getSetting($context->getId(), 'nlmTitle'))
-            );
-        }
         return ($this->getSetting($context->getId(), 'nlmTitle'));
+    }
+
+    public function getConnectionSettings(Context $context): array
+    {
+        $connectionSettings = [];
+        $connectionSettings['type'] = $this->getSetting($context->getId(), 'type');
+        $connectionSettings['host'] = $this->getSetting($context->getId(), 'host');
+        $connectionSettings['port'] = $this->getSetting($context->getId(), 'port');
+        $connectionSettings['username'] = $this->getSetting($context->getId(), 'username');
+        $connectionSettings['password'] = $this->getSetting($context->getId(), 'password');
+        $connectionSettings['path'] = $this->getSetting($context->getId(), 'path');
+        return $connectionSettings;
     }
 
     /**
      * Exports a zip file with the selected issues to the configured PMC account.
      *
-     * @param array $filenames the path(s) of the zip file(s)
+     * @param array $filenames the filenames and path(s) of the zip file(s)
      * @throws Exception|FilesystemException
      */
     public function depositXml($objects, $context, $filenames): bool|array
     {
-        $endpoints = $this->getEndpoint($context->getId());
+        // Get connection settings
+        $settings = $this->getConnectionSettings($context);
 
         // Verify that the credentials are complete
-        foreach ($endpoints as $credentials) {
-            if (empty($credentials['type']) || empty($credentials['hostname'])) {
-                return [['plugins.importexport.pmc.export.failure.settings']];
-            }
+        if (
+            empty($settings['type']) ||
+            empty($settings['host']) ||
+            empty($settings['username']) ||
+            empty($settings['password'])
+        ) {
+            return [['plugins.importexport.pmc.export.failure.settings']];
         }
 
         // Perform the deposit
-        foreach ($endpoints as $credentials) {
-            $adapter = match ($credentials['type']) {
-                'ftp' => new FtpAdapter(FtpConnectionOptions::fromArray([
-                    'host' => $credentials['hostname'],
-                    'port' => ((int)$credentials['port'] ?? null) ?: 21,
-                    'username' => $credentials['username'],
-                    'password' => $credentials['password'],
-                    'root' => $credentials['path'],
-                ])),
-                'sftp' => new SftpAdapter(
-                    new SftpConnectionProvider(
-                        host: $credentials['hostname'],
-                        username: $credentials['username'],
-                        password: $credentials['password'],
-                        port: ((int)$credentials['port'] ?? null) ?: 22,
-                    ),
-                    $credentials['path'] ?? '/',
-                    PortableVisibilityConverter::fromArray([
-                        'file' => [
-                            'public' => 0640,
-                            'private' => 0604,
-                        ],
-                        'dir' => [
-                            'public' => 0740,
-                            'private' => 7604,
-                        ],
-                    ])
+        $adapter = match ($settings['type']) {
+            'ftp' => new FtpAdapter(FtpConnectionOptions::fromArray([
+                'host' => $settings['host'],
+                'port' => (int)$settings['port'] ?: 21,
+                'username' => $settings['username'],
+                'password' => $settings['password'],
+                'root' => $settings['path'],
+            ])),
+            'sftp' => new SftpAdapter(
+                new SftpConnectionProvider(
+                    host: $settings['host'],
+                    username: $settings['username'],
+                    password: $settings['password'],
+                    port: (int)$settings['port'] ?: 22,
                 ),
-                default => throw new Exception('Unknown endpoint type!'), // @todo return error
-            };
+                $settings['path'] ?? '/',
+                PortableVisibilityConverter::fromArray([
+                    'file' => [
+                        'public' => 0640,
+                        'private' => 0604,
+                    ],
+                    'dir' => [
+                        'public' => 0740,
+                        'private' => 7604,
+                    ],
+                ])
+            ),
+            default => throw new Exception('Unknown endpoint type!'), // @todo handle error
+        };
 
-            foreach ($filenames as $filename => $path) {
-                $fs = new Filesystem($adapter);
-                $fp = fopen($path, 'r');
-                $fs->writeStream($this->buildZipFilename(), $fp);
-                fclose($fp);
-            }
+        foreach ($filenames as $filename => $filepath) {
+            $fs = new Filesystem($adapter);
+            $fp = fopen($filepath, 'r');
+            $fs->writeStream($filename . '.zip', $fp);
+            fclose($fp);
+            // @todo check if file is deleted
         }
+
         return true;
     }
 
@@ -371,29 +332,23 @@ class PubmedCentralExportPlugin extends PubObjectsExportPlugin implements HasTas
         $paths = [];
         try {
             foreach ($objects as $object) {
-                if ($object instanceof Submission) {
-                    $publication = $object->getCurrentPublication();
-                } elseif ($object instanceof Publication) {
-                    $publication = $object;
-                } else {
-                    throw new Exception('Invalid object type');
-                }
-
                 $path = tempnam(sys_get_temp_dir(), 'tmp');
                 $zip = new ZipArchive();
-                $pubId = $publication->getId();
                 if ($zip->open($path, ZipArchive::CREATE) !== true) {
                     error_log('Unable to create PMC ZIP: ' . $zip->getStatusString()); // @todo integrate into error
                     return [['plugins.importexport.pmc.export.failure.creatingFile']];
                 }
+
+                $publication = $object instanceof Submission ? $object->getCurrentPublication() : $object;
+                $pubId = $publication->getId();
                 $document = $this->exportXML($object, null, $this->context, null, $errors);
                 $filename = $this->buildFileName($pubId);
                 $articlePathName = $filename . '/' . $this->buildFileName($pubId, false, 'xml');
-                error_log('article path name: ' . print_r($articlePathName, true));
 
                 if (!$zip->addFromString($articlePathName, $document)) {
-                    error_log("Unable to add {$articlePathName} to PMC ZIP");
-                    return [['plugins.importexport.pmc.export.failure.creatingFile']];
+                    $errorMessage = 'Unable to add file to PMC ZIP'; //@todo add file info to error message
+                    $this->updateStatus($object, PubObjectsExportPlugin::EXPORT_STATUS_ERROR, $errorMessage);
+                    return [['plugins.importexport.pmc.export.failure.creatingFile', $errorMessage]];
                 }
 
                 // add galleys
@@ -406,12 +361,11 @@ class PubmedCentralExportPlugin extends PubObjectsExportPlugin implements HasTas
                         continue;
                     }
 
-                    // @todo check for filename in the JATS and replace it with the new filename to meet pmc naming requirements
-
+                    // @todo check for filename in the JATS and add or replace it with the new filename to meet pmc requirements
                     $filePath = $fileService->get($submissionFile->getData('fileId'))->path;
                     $extension = pathinfo($filePath, PATHINFO_EXTENSION);
                     $galleyFilename = $filename . '/' . $this->buildFileName($pubId, false, $extension);
-                    // @todo should we make sure files meet 2GB max size requirement?
+                    // @todo make sure files meet 2GB max size requirement? e.g:
 //                    $filesize = $fileService->fs->fileSize($filePath);
 //                    if ($filesize > 2147483648) {
 //                        error_log('Galley file is too large for PMC');
@@ -427,10 +381,10 @@ class PubmedCentralExportPlugin extends PubObjectsExportPlugin implements HasTas
                         error_log("Unable to add file {$filePath} to PMC ZIP");
                         $errorMessage = ''; //@todo
                         $this->updateStatus($object, PubObjectsExportPlugin::EXPORT_STATUS_ERROR, $errorMessage);
-                        throw new Exception(__('plugins.importexport.pmc.export.failure.creatingFile'));
+                        return [['plugins.importexport.pmc.export.failure.creatingFile', $errorMessage]];
                     }
                 }
-                $paths[$filename] = $path;
+                $paths[$this->buildFileName($pubId, true)] = $path;
             }
         } finally {
             if (!$zip->close()) {
@@ -576,9 +530,7 @@ class PubmedCentralExportPlugin extends PubObjectsExportPlugin implements HasTas
     public function getExportActions($context): array
     {
         $actions = [PubObjectsExportPlugin::EXPORT_ACTION_EXPORT, PubObjectsExportPlugin::EXPORT_ACTION_MARKREGISTERED];
-        error_log(print_r($this->getEndpoint($context->getId()), true));
-        if (!empty($this->getEndpoint($context->getId()))) { // @todo fix
-            error_log('PMC endpoint not empty');
+        if ($this->getSetting($context->getId(), 'host') != '') { // @todo add username/pw checks
             array_unshift($actions, PubObjectsExportPlugin::EXPORT_ACTION_DEPOSIT);
         }
         return $actions;

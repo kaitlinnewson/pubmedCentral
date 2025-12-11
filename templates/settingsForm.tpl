@@ -32,16 +32,16 @@
 
 			{capture assign="sectionTitle"}{translate key="plugins.importexport.pmc.endpoint"}{/capture}
 			{fbvFormSection id="formSection" title=$sectionTitle translate=false class="endpointContainer"}
-				{fbvElement type="select" id="type" from=$endpointTypeOptions selected=$credentials.type label="plugins.importexport.pmc.endpoint.type" size=$fbvStyles.size.SMALL translate=false}
+				{fbvElement type="select" id="type" from=$endpointTypeOptions selected=$type label="plugins.importexport.pmc.type" size=$fbvStyles.size.SMALL translate=false}
 				<div class="endpointDetails">
 					<div class="presetField ftp sftp">
-						{fbvElement type="text" id="hostname" value=$credentials.hostname label="plugins.importexport.pmc.endpoint.hostname" maxlength="120" size=$fbvStyles.size.MEDIUM}
-						{fbvElement type="text" id="port" value=$credentials.port label="plugins.importexport.pmc.endpoint.port" maxlength="5" size=$fbvStyles.size.MEDIUM}
-						{fbvElement type="text" id="path" value=$credentials.path label="plugins.importexport.pmc.endpoint.path" maxlength="120" size=$fbvStyles.size.MEDIUM}
+						{fbvElement type="text" id="host" value=$host label="plugins.importexport.pmc.host" maxlength="120" size=$fbvStyles.size.MEDIUM}
+						{fbvElement type="text" id="port" value=$port label="plugins.importexport.pmc.port" maxlength="5" size=$fbvStyles.size.MEDIUM}
+						{fbvElement type="text" id="path" value=$path label="plugins.importexport.pmc.path" maxlength="120" size=$fbvStyles.size.MEDIUM}
 					</div>
-					{fbvElement type="text" id="username" value=$credentials.username label="plugins.importexport.pmc.endpoint.username" maxlength="120" size=$fbvStyles.size.MEDIUM}
+					{fbvElement type="text" id="username" value=$username label="plugins.importexport.pmc.username" maxlength="120" size=$fbvStyles.size.MEDIUM}
 					<div class="authentication-password">
-						{fbvElement type="text" password=true id="password" value=$credentials.password label="plugins.importexport.pmc.endpoint.password" maxlength="120" size=$fbvStyles.size.MEDIUM}
+						{fbvElement type="text" password=true id="password" value=$password label="plugins.importexport.pmc.password" maxlength="120" size=$fbvStyles.size.MEDIUM}
 					</div>
 				</div>
 			{/fbvFormSection}
