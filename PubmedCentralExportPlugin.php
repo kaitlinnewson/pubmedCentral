@@ -21,6 +21,10 @@ use APP\plugins\PubObjectsExportPlugin;
 use APP\publication\Publication;
 use APP\submission\Submission;
 use APP\template\TemplateManager;
+use DOMDocument;
+use DOMElement;
+use DOMImplementation;
+use DOMXPath;
 use Exception;
 use League\Flysystem\Filesystem;
 use League\Flysystem\FilesystemException;
@@ -41,6 +45,10 @@ use ZipArchive;
 
 class PubmedCentralExportPlugin extends PubObjectsExportPlugin implements HasTaskScheduler
 {
+    public const JATS_PUBLIC_ID = '-//NLM//DTD JATS (Z39.96) Journal Publishing DTD v1.2 20190208//EN';
+    public const JATS_SYSTEM_ID = 'http://jats.nlm.nih.gov/publishing/1.2/JATS-journalpublishing1.dtd';
+    public const JATS_VERSION = '1.2';
+
     private Context $context;
 
     /**
@@ -207,6 +215,12 @@ class PubmedCentralExportPlugin extends PubObjectsExportPlugin implements HasTas
                 $outputErrors[] = $errors;
             }
         }
+
+        // If the JATS document is system-generated, modify it to ensure it meets PMC requirements.
+        if ($document->isDefaultContent) {
+            return $this->modifyJats($xml);
+        }
+
         return $xml;
     }
 
@@ -534,5 +548,35 @@ class PubmedCentralExportPlugin extends PubObjectsExportPlugin implements HasTas
             array_unshift($actions, PubObjectsExportPlugin::EXPORT_ACTION_DEPOSIT);
         }
         return $actions;
+    }
+
+    /**
+     * Modify the JATS XML to meet PMC requirements.
+     */
+    public function modifyJats(string $importedJats): string
+    {
+        //@todo could imported jats be empty?
+
+        // Add the JATS 1.2 DTD declaration.
+        $impl = new DOMImplementation();
+        $dtd = $impl->createDocumentType(
+            'article',
+            self::JATS_PUBLIC_ID,
+            self::JATS_SYSTEM_ID
+        );
+        $newJatsDoc = $impl->createDocument(null, '', $dtd);
+        $newJatsDoc->encoding = 'UTF-8';
+
+        $dom = new DOMDocument();
+        $dom->loadXML($importedJats);
+        $xpath = new DOMXPath($dom);
+        $articleNode = $xpath->query('//article')->item(0);
+
+        if ($articleNode instanceof DOMElement) {
+            $articleNode->setAttribute('dtd-version', self::JATS_VERSION);
+            $newJatsDoc->appendChild($newJatsDoc->importNode($articleNode, true));
+        }
+
+        return $newJatsDoc->saveXML();
     }
 }
