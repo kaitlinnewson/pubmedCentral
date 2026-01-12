@@ -24,6 +24,7 @@ use APP\template\TemplateManager;
 use DOMDocument;
 use DOMElement;
 use DOMImplementation;
+use DOMNode;
 use DOMXPath;
 use Exception;
 use League\Flysystem\Filesystem;
@@ -215,7 +216,7 @@ class PubmedCentralExportPlugin extends PubObjectsExportPlugin implements HasTas
 
         // If the JATS document is system-generated, modify it to ensure it meets PMC requirements.
         if ($document->isDefaultContent) {
-            return $this->modifyJats($xml);
+            return $this->modifyJats($xml, $publication->getId());
         }
 
         return $xml;
@@ -521,12 +522,98 @@ class PubmedCentralExportPlugin extends PubObjectsExportPlugin implements HasTas
 
     /**
      * Modify the JATS XML to meet PMC requirements.
+     * @throws Exception
      */
-    public function modifyJats(string $importedJats): string
+    public function modifyJats(string $importedJats, int $publicationId): string
     {
-        //@todo could imported jats be empty?
+        //@todo could imported jats be empty? e.g. if jats template plugin was missing
 
-        // Add the JATS 1.2 DTD declaration.
+        $dom = new DOMDocument();
+        //$dom->preserveWhiteSpace = false; @todo uncomment later
+        $dom->loadXML($importedJats);
+        $xpath = new DOMXPath($dom);
+
+        $bodyNode = $xpath->query('//article/body')->item(0);
+        if (!$bodyNode) {
+            throw new Exception('No body node found in JATS XML.'); // @todo improve error handling
+        }
+
+        // Add Journal identifier for pmc and remove other unsupported journal identifiers
+        $journalId = $this->nlmTitle($this->context);
+        // @todo ensure journal ID is set
+        if ($journalId) {
+            $journalIdNode = $dom->createElement('journal-id', $journalId);
+            $journalIdNode->setAttribute('journal-id-type', 'pmc');
+
+            $journalMetaNode = $xpath->query('//article/front/journal-meta')->item(0);
+            $journalMetaChildElement = $xpath->query('//article/front/journal-meta/*[1]')->item(0);
+            $journalMetaNode->insertBefore($journalIdNode, $journalMetaChildElement);
+        }
+        $journalIdNodes = $xpath->query(
+            "//article/front/journal-meta/journal-id[@journal-id-type='ojs' or @journal-id-type='publisher']"
+        );
+        foreach ($journalIdNodes as $node) { /** @var $node DOMNode **/
+            $node->parentNode->removeChild($node);
+        }
+
+        // remove contrib in journal-meta if not an editor (only author or editor type is allowed)
+        $journalContribNodes = $xpath->query(
+            "//article/front/journal-meta/contrib-group/contrib[not(@contrib-type='editor')]"
+        );
+        foreach ($journalContribNodes as $node) { /** @var $node DOMNode **/
+            $node->parentNode->removeChild($node);
+        }
+
+        // set author contrib-type on contrib nodes
+        $articleContribNodes = $xpath->query("//article/front/article-meta/contrib-group/contrib");
+        foreach ($articleContribNodes as $node) {
+            $node->setAttribute('contrib-type', 'author');
+        }
+
+        // change pub-date publication-format from epub to electronic
+        $pubDateNode = $xpath->query("//article/front/article-meta/pub-date[@publication-format='epub']")->item(0);
+        $pubDateNode?->setAttribute('publication-format', 'electronic');
+
+        // move name out of name-alternatives if only one name is present for a contrib
+        // as name-alternatives must contain more than 1 child element for PMC
+        $nameAlternativesNodes = $xpath->query("//article/front/article-meta/contrib-group/contrib/name-alternatives");
+        foreach ($nameAlternativesNodes as $node) { /** @var $node DOMNode **/
+            $names = $xpath->query('./name', $node);
+            if ($names->length > 1) {
+                continue;
+            }
+            if ($names->length === 1) {
+                $stringName = $xpath->query('./string-name', $node);
+                if ($stringName->length === 1) {
+                    $stringNameNode = $stringName->item(0);
+                    $stringNameNode->setAttribute('name-style', 'western');
+                    $node->parentNode->insertBefore($stringNameNode, $node);
+                }
+
+                $nameNode = $names->item(0);
+                // Move the name node before the name-alternatives node
+                $node->parentNode->insertBefore($nameNode, $node);
+                // Remove the now-redundant name-alternatives node
+                $node->parentNode->removeChild($node);
+            }
+        }
+
+        // generate an elocation id from submission id for now as either elocation id or fpage are required by PMC
+        $fpageNode = $xpath->query("//article/front/article-meta/fpage")->item(0);
+        if (!$fpageNode) {
+            $elocationNode = $dom->createElement('elocation-id');
+            $elocationNode->appendChild($dom->createTextNode($publicationId));
+            $articleMetaNode = $xpath->query("//article/front/article-meta")->item(0);
+            $pubHistoryNode = $xpath->query("//article/front/article-meta/pub-history")->item(0);
+            if ($pubHistoryNode) {
+                $articleMetaNode->insertBefore($elocationNode, $pubHistoryNode);
+            } else {
+                $permissionsNode = $xpath->query("//article/front/article-meta/permissions")->item(0);
+                $articleMetaNode->insertBefore($elocationNode, $permissionsNode);
+            }
+        }
+
+        // Add the JATS 1.2 DTD declaration
         $impl = new DOMImplementation();
         $dtd = $impl->createDocumentType(
             'article',
@@ -536,13 +623,10 @@ class PubmedCentralExportPlugin extends PubObjectsExportPlugin implements HasTas
         $newJatsDoc = $impl->createDocument(null, '', $dtd);
         $newJatsDoc->encoding = 'UTF-8';
 
-        $dom = new DOMDocument();
-        $dom->loadXML($importedJats);
-        $xpath = new DOMXPath($dom);
-        $articleNode = $xpath->query('//article')->item(0);
-
+        $articleNode = $dom->documentElement;
         if ($articleNode instanceof DOMElement) {
             $articleNode->setAttribute('dtd-version', self::JATS_VERSION);
+            $articleNode->setAttribute('article-type', 'research-article');
             $newJatsDoc->appendChild($newJatsDoc->importNode($articleNode, true));
         }
 
