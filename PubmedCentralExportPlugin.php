@@ -481,6 +481,16 @@ class PubmedCentralExportPlugin extends PubObjectsExportPlugin implements HasTas
     }
 
     /**
+     * @copydoc Plugin::getEncryptedSettingFields()
+     */
+    public function getEncryptedSettingFields(): array
+    {
+        return [
+            'password',
+        ];
+    }
+
+    /**
      * @copydoc PubObjectsExportPlugin::getSettingsFormClassName()
      */
     public function getSettingsFormClassName(): string
