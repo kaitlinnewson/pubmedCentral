@@ -53,8 +53,14 @@ msgstr "To export the issues to PubMed Central you must setup the credentials in
 msgid "plugins.importexport.pmc.export.failure.loadingIssue"
 msgstr "Failed to load the issue with ID #{$issueId}."
 
+msgid "plugins.importexport.pmc.export.failure.jatsFileNotFound"
+msgstr "No suitable JATS XML file was found for export."
+
 msgid "plugins.importexport.pmc.export.failure.creatingFile"
 msgstr "Failed to create zip file. The system returned an error: '{$param}'."
+
+msgid "plugins.importexport.pmc.export.failure.addingFile"
+msgstr "Unable to add file {$filePath} to PMC ZIP. The system returned an error: '{$param}'."
 
 msgid "plugins.importexport.pmc.settings.form.jatsImportedOnly"
 msgstr "Only allow exports for articles with uploaded JATS XML files. If not enabled, the plugin will try to "

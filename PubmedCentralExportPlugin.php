@@ -194,8 +194,7 @@ class PubmedCentralExportPlugin extends PubObjectsExportPlugin implements HasTas
             !$document->jatsContent ||
             ($jatsImportedOnly == $document->isDefaultContent)
         ) {
-            error_log("No suitable JATS XML file was found for export.");
-            $outputErrors[] = __('plugins.importexport.pmc.export.failure.creatingFile');
+            $outputErrors[] = __('plugins.importexport.pmc.export.failure.jatsFileNotFound');
         }
 
         $xml = $document->jatsContent;
@@ -218,7 +217,7 @@ class PubmedCentralExportPlugin extends PubObjectsExportPlugin implements HasTas
 
         // If the JATS document is system-generated, modify it to ensure it meets PMC requirements.
         if ($document->isDefaultContent) {
-            return $this->modifyJats($xml, $publication->getId());
+            return $this->modifyJats($xml, $object, $submissionId);
         }
 
         return $xml;
@@ -262,7 +261,6 @@ class PubmedCentralExportPlugin extends PubObjectsExportPlugin implements HasTas
     public function getConnectionSettings(Context $context): array
     {
         $connectionSettings = [];
-        $connectionSettings['type'] = $this->getSetting($context->getId(), 'type');
         $connectionSettings['host'] = $this->getSetting($context->getId(), 'host');
         $connectionSettings['port'] = $this->getSetting($context->getId(), 'port');
         $connectionSettings['username'] = $this->getSetting($context->getId(), 'username');
@@ -272,7 +270,7 @@ class PubmedCentralExportPlugin extends PubObjectsExportPlugin implements HasTas
     }
 
     /**
-     * Exports a zip file with the selected issues to the configured PMC account.
+     * Exports a zip file with the selected articles to the configured PMC account.
      *
      * @param array $filenames the filenames and path(s) of the zip file(s)
      * @throws Exception|FilesystemException
@@ -284,7 +282,6 @@ class PubmedCentralExportPlugin extends PubObjectsExportPlugin implements HasTas
 
         // Verify that the credentials are complete
         if (
-            empty($settings['type']) ||
             empty($settings['host']) ||
             empty($settings['username']) ||
             empty($settings['password'])
@@ -327,7 +324,10 @@ class PubmedCentralExportPlugin extends PubObjectsExportPlugin implements HasTas
                 $path = tempnam(sys_get_temp_dir(), 'tmp');
                 $zip = new ZipArchive();
                 if ($zip->open($path, ZipArchive::CREATE) !== true) {
-                    error_log('Unable to create PMC ZIP: ' . $zip->getStatusString()); // @todo integrate into error
+                    $errorMessage = __('plugins.importexport.pmc.export.failure.creatingFile', [
+                        'param' => $zip->getStatusString()
+                    ]);
+                    $this->updateStatus($object, PubObjectsExportPlugin::EXPORT_STATUS_ERROR, $errorMessage);
                     return [['plugins.importexport.pmc.export.failure.creatingFile']];
                 }
 
@@ -338,9 +338,12 @@ class PubmedCentralExportPlugin extends PubObjectsExportPlugin implements HasTas
                 $articlePathName = $filename . '/' . $this->buildFileName($pubId, false, 'xml');
 
                 if (!$zip->addFromString($articlePathName, $document)) {
-                    $errorMessage = 'Unable to add file to PMC ZIP'; //@todo add file info to error message
+                    $errorMessage = __('plugins.importexport.pmc.export.failure.addingFile', [
+                        'filePath' => $articlePathName,
+                        'param' => $zip->getStatusString()
+                    ]);
                     $this->updateStatus($object, PubObjectsExportPlugin::EXPORT_STATUS_ERROR, $errorMessage);
-                    return [['plugins.importexport.pmc.export.failure.creatingFile', $errorMessage]];
+                    return [['plugins.importexport.pmc.export.failure.creatingFile', $zip->getStatusString()]];
                 }
 
                 // Add article galley file
@@ -355,6 +358,7 @@ class PubmedCentralExportPlugin extends PubObjectsExportPlugin implements HasTas
                     $submissionFileId = $galley->getData('submissionFileId');
                     $galleyFile = $submissionFileId ? Repo::submissionFile()->get($submissionFileId) : null;
                     if (!$galleyFile) {
+                        // @todo error if no submission file?
                         continue;
                     }
 
@@ -376,10 +380,12 @@ class PubmedCentralExportPlugin extends PubObjectsExportPlugin implements HasTas
                                 $fileService->fs->read($filePath)
                             )
                         ) {
-                            error_log("Unable to add file {$filePath} to PMC ZIP");
-                            $errorMessage = ''; //@todo
+                            $errorMessage = __('plugins.importexport.pmc.export.failure.addingFile', [
+                                'filePath' => $articlePathName,
+                                'param' => $zip->getStatusString()
+                            ]);
                             $this->updateStatus($object, PubObjectsExportPlugin::EXPORT_STATUS_ERROR, $errorMessage);
-                            return [['plugins.importexport.pmc.export.failure.creatingFile', $errorMessage]];
+                            return [['plugins.importexport.pmc.export.failure.addingFile', $zip->getStatusString()]];
                         }
                     }
                 }
@@ -539,7 +545,11 @@ class PubmedCentralExportPlugin extends PubObjectsExportPlugin implements HasTas
     public function getExportActions($context): array
     {
         $actions = [PubObjectsExportPlugin::EXPORT_ACTION_EXPORT, PubObjectsExportPlugin::EXPORT_ACTION_MARKREGISTERED];
-        if ($this->getSetting($context->getId(), 'host') != '') { // @todo add username/pw checks
+        if (
+            !empty($this->getSetting($context->getId(), 'host')) &&
+            !empty($this->getSetting($context->getId(), 'username')) &&
+            !empty($this->getSetting($context->getId(), 'password'))
+        ) {
             array_unshift($actions, PubObjectsExportPlugin::EXPORT_ACTION_DEPOSIT);
         }
         return $actions;
@@ -549,7 +559,7 @@ class PubmedCentralExportPlugin extends PubObjectsExportPlugin implements HasTas
      * Modify the JATS XML to meet PMC requirements.
      * @throws Exception
      */
-    public function modifyJats(string $importedJats, int $publicationId): string
+    public function modifyJats(string $importedJats, Submission|Publication $object, int $submissionId): string
     {
         //@todo could imported jats be empty? e.g. if jats template plugin was missing
 
@@ -624,10 +634,12 @@ class PubmedCentralExportPlugin extends PubObjectsExportPlugin implements HasTas
         }
 
         // generate an elocation id from submission id for now as either elocation id or fpage are required by PMC
+        // @todo consider in relation to https://github.com/pkp/pkp-lib/issues/4695 and the change in number
+        // from previous ORE deposits to PMC under f1000
         $fpageNode = $xpath->query("//article/front/article-meta/fpage")->item(0);
         if (!$fpageNode) {
             $elocationNode = $dom->createElement('elocation-id');
-            $elocationNode->appendChild($dom->createTextNode($publicationId));
+            $elocationNode->appendChild($dom->createTextNode($submissionId));
             $articleMetaNode = $xpath->query("//article/front/article-meta")->item(0);
             $pubHistoryNode = $xpath->query("//article/front/article-meta/pub-history")->item(0);
             if ($pubHistoryNode) {
