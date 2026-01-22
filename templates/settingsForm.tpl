@@ -1,8 +1,8 @@
 {**
  * templates/settingsForm.tpl
  *
- * Copyright (c) 2025 Simon Fraser University
- * Copyright (c) 2025 John Willinsky
+ * Copyright (c) 2026 Simon Fraser University
+ * Copyright (c) 2026 John Willinsky
  * Distributed under the GNU GPL v3. For full terms see the file LICENSE.
  *
  * PubMed Central plugin settings
@@ -30,7 +30,7 @@
 			{fbvFormSection}
 				<span class="instruct">{translate key="plugins.importexport.pmc.settings.form.nlmTitle.description"}</span>
 				<br/>
-				{fbvElement type="text" id="nlmTitle" value=$nlmTitle label="plugins.importexport.pmc.settings.form.nlmTitle" maxlength="100" size=$fbvStyles.size.MEDIUM}
+				{fbvElement type="text" required=true id="nlmTitle" value=$nlmTitle label="plugins.importexport.pmc.settings.form.nlmTitle" maxlength="100" size=$fbvStyles.size.MEDIUM}
 			{/fbvFormSection}
 
 			{capture assign="sectionTitle"}{translate key="plugins.importexport.pmc.endpoint"}{/capture}

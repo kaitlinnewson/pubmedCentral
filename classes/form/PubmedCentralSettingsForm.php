@@ -3,8 +3,8 @@
 /**
  * @file PubmedCentralSettingsForm.php
  *
- * Copyright (c) 2025 Simon Fraser University
- * Copyright (c) 2025 John Willinsky
+ * Copyright (c) 2026 Simon Fraser University
+ * Copyright (c) 2026 John Willinsky
  * Distributed under the GNU GPL v3. For full terms see the file LICENSE.
  *
  * @class PubmedCentralSettingsForm
@@ -16,7 +16,6 @@ namespace APP\plugins\generic\pubmedCentral\classes\form;
 
 use APP\plugins\generic\pubmedCentral\PubmedCentralExportPlugin;
 use APP\plugins\PubObjectsExportSettingsForm;
-use APP\template\TemplateManager;
 use Exception;
 
 class PubmedCentralSettingsForm extends PubObjectsExportSettingsForm
@@ -81,7 +80,6 @@ class PubmedCentralSettingsForm extends PubObjectsExportSettingsForm
         return [
             'jatsImported' => 'bool',
             'nlmTitle' => 'string',
-            'type' => 'string',
             'host' => 'string',
             'port' => 'string', // @todo check
             'path' => 'string',
@@ -94,8 +92,6 @@ class PubmedCentralSettingsForm extends PubObjectsExportSettingsForm
     {
         return in_array($settingName, [
             'jatsImported',
-            'nlmTitle',
-            'type',
             'host',
             'port',
             'path',

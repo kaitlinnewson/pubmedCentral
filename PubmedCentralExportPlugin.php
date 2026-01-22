@@ -3,8 +3,8 @@
 /**
  * @file PubmedCentralExportPlugin.php
  *
- * Copyright (c) 2025 Simon Fraser University
- * Copyright (c) 2025 John Willinsky
+ * Copyright (c) 2026 Simon Fraser University
+ * Copyright (c) 2026 John Willinsky
  * Distributed under the GNU GPL v3. For full terms see the file LICENSE.
  *
  * @class PubmedCentralExportPlugin
@@ -198,11 +198,6 @@ class PubmedCentralExportPlugin extends PubObjectsExportPlugin implements HasTas
         }
 
         $xml = $document->jatsContent;
-
-        // @todo add nlm title to the JATS if set if we are generating it, e.g.
-        // <abbrev-journal-title abbrev-type="nlm-ta">Proc Natl Acad Sci USA</abbrev-journal-title>
-        // AND
-        // <journal-id journal-id-type="pmc">BMJ</journal-id>
 
         $errors = array_filter(libxml_get_errors(), function ($a) {
             return $a->level == LIBXML_ERR_ERROR || $a->level == LIBXML_ERR_FATAL;
@@ -573,23 +568,27 @@ class PubmedCentralExportPlugin extends PubObjectsExportPlugin implements HasTas
             throw new Exception('No body node found in JATS XML.'); // @todo improve error handling
         }
 
-        // Add Journal identifier for pmc and remove other unsupported journal identifiers
+        // Add Journal identifier for pmc and remove unsupported journal identifiers
         $journalId = $this->nlmTitle($this->context);
-        // @todo ensure journal ID is set
-        if ($journalId) {
-            $journalIdNode = $dom->createElement('journal-id', $journalId);
-            $journalIdNode->setAttribute('journal-id-type', 'pmc');
+        $journalIdNode = $dom->createElement('journal-id', $journalId);
+        $journalIdNode->setAttribute('journal-id-type', 'pmc');
 
-            $journalMetaNode = $xpath->query('//article/front/journal-meta')->item(0);
-            $journalMetaChildElement = $xpath->query('//article/front/journal-meta/*[1]')->item(0);
-            $journalMetaNode->insertBefore($journalIdNode, $journalMetaChildElement);
-        }
+        $journalMetaNode = $xpath->query('//article/front/journal-meta')->item(0);
+        $journalMetaChildElement = $xpath->query('//article/front/journal-meta/*[1]')->item(0);
+        $journalMetaNode->insertBefore($journalIdNode, $journalMetaChildElement);
         $journalIdNodes = $xpath->query(
             "//article/front/journal-meta/journal-id[@journal-id-type='ojs' or @journal-id-type='publisher']"
         );
         foreach ($journalIdNodes as $node) { /** @var $node DOMNode **/
             $node->parentNode->removeChild($node);
         }
+
+        // Add NLM title as abbreviated journal title
+        $nlmJournalTitleNode = $dom->createElement('abbrev-journal-title');
+        $nlmJournalTitleNode->setAttribute('abbrev-type', 'nlm-ta');
+        $nlmJournalTitleNode->appendChild($dom->createTextNode($journalId));
+        $journalTitleNode =  $xpath->query("//article/front/journal-meta/journal-title-group")->item(0);
+        $journalTitleNode->appendChild($nlmJournalTitleNode);
 
         // remove contrib in journal-meta if not an editor (only author or editor type is allowed)
         $journalContribNodes = $xpath->query(
