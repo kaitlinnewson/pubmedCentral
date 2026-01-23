@@ -1,12 +1,6 @@
 msgid "plugins.importexport.pmc.displayName"
 msgstr "PubMed Central Export Plugin"
 
-msgid "plugins.importexport.pmc.ftpLibraryMissing"
-msgstr ""
-"<blockquote style=\"border: 1px solid; padding: 1em;\"><strong>⚠️ Warning:</strong> The <code>league/flysystem-ftp</code> library is missing from your server. To install it, run:\n"
-"<pre><code>composer -d lib/pkp require league/flysystem-ftp</code></pre>"
-"...or upgrade to a newer release of OJS. Until this is resolved, <strong>FTP deposits will not work</strong>. SFTP deposits can still be used.</blockquote>"
-
 msgid "plugins.importexport.pmc.description"
 msgstr ""
 "This plugin may be used to export your journal content to <a href=\"https://www.pmc.ncbi.nlm.nih.gov.org\" target=\"_blank\">PubMed Central</a>. "
@@ -15,6 +9,17 @@ msgstr ""
 
 msgid "plugins.importexport.pmc.description.short"
 msgstr "This plugin may be used to export your journal content to PubMed Central."
+
+msgid "plugins.importexport.pmc.ftpLibraryMissing"
+msgstr ""
+"<blockquote style=\"border: 1px solid; padding: 1em;\"><strong>⚠️ Warning:</strong> The <code>league/flysystem-ftp</code> library is missing from your server. To install it, run:\n"
+"<pre><code>composer -d lib/pkp require league/flysystem-ftp</code></pre>"
+"...or upgrade to a newer release of OJS. Until this is resolved, <strong>FTP deposits will not work</strong>. SFTP deposits can still be used.</blockquote>"
+
+msgid "plugins.importexport.pmc.missingFields"
+msgstr ""
+"This journal is missing some required information. Please go to your <a href="
+"\"{$url}\">Journal Settings</a> and ensure you have entered the journal title, publisher, and ISSN."
 
 msgid "plugins.importexport.pmc.host"
 msgstr "Host"
