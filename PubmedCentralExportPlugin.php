@@ -833,21 +833,18 @@ class PubmedCentralExportPlugin extends PubObjectsExportPlugin implements HasTas
             XSLTransformer::XSL_TRANSFORMER_DOCTYPE_DOM
         );
 
-        // if the root node is <ERR>, the style checker found issues
-        if ($filteredXml->documentElement->nodeName == 'ERR') {
-            $errors = $filteredXml->getElementsByTagName('error');
-            $warnings = $filteredXml->getElementsByTagName('warning');
+        $details = [];
 
-            $details = [];
-            foreach ($errors as $error) {
-                $details[] = 'PMC Style Check Error: ' . $error->textContent;
-            }
-            foreach ($warnings as $warning) {
-                // @todo decide how to handle warnings
-                error_log('PMC Style Warning: ' . $warning->textContent);
-            }
-            return !empty($details) ? $details : ['Unknown style validation error.'];
+        $errors = $filteredXml->getElementsByTagName('error');
+        foreach ($errors as $error) {
+            $details[] = 'PMC Style Check Error: ' . $error->textContent;
         }
-        return true;
+
+        $warnings = $filteredXml->getElementsByTagName('warning');
+        foreach ($warnings as $warning) {
+            // @todo decide how to handle warnings - add to errors or continue?
+            error_log('PMC Style Warning: ' . $warning->textContent);
+        }
+        return !empty($details) ? $details : true;
     }
 }
