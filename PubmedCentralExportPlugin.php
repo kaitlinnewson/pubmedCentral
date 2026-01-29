@@ -325,10 +325,8 @@ class PubmedCentralExportPlugin extends PubObjectsExportPlugin implements HasTas
      */
     public function depositXML($objects, $context, $filename = null): bool|array
     {
-        // Get connection settings
-        $settings = $this->getConnectionSettings($context);
-
         // Verify that the credentials are complete
+        $settings = $this->getConnectionSettings($context);
         if (
             empty($settings['host']) ||
             empty($settings['username']) ||
@@ -359,6 +357,7 @@ class PubmedCentralExportPlugin extends PubObjectsExportPlugin implements HasTas
                         PubObjectsExportPlugin::EXPORT_STATUS_ERROR,
                         $e->getMessage()
                     );
+                    $packagedObjects['errors'][] = $e->getMessage();
                     continue;
                 }
                 // Mark the object as registered.
@@ -368,7 +367,16 @@ class PubmedCentralExportPlugin extends PubObjectsExportPlugin implements HasTas
                     error_log('Failed to delete zip file after deposit: ' . $objectDetails['path']);
                 }
             } else {
-                error_log('Failed to open zip file for deposit: ' . $objectDetails['path']);
+                $errorMessage = __(
+                    'plugins.importexport.pmc.export.failure.openingFile',
+                    ['path' => $objectDetails['path']]
+                );
+                $this->updateStatus(
+                    $objectDetails['object'],
+                    PubObjectsExportPlugin::EXPORT_STATUS_ERROR,
+                    $errorMessage
+                );
+                $packagedObjects['errors'][] = $errorMessage;
             }
         }
         if ($packagedObjects['errors']) {
@@ -383,7 +391,7 @@ class PubmedCentralExportPlugin extends PubObjectsExportPlugin implements HasTas
      *
      * @return array the paths of the created zip files.
      */
-    public function createZip(array $objects, Context $context, $isDownload = false): array
+    public function createZip(array $objects, Context $context, bool $isDownload = false): array
     {
         $paths = [];
         $errors = [];
@@ -666,15 +674,17 @@ class PubmedCentralExportPlugin extends PubObjectsExportPlugin implements HasTas
         $dom->loadXML($importedJats);
         $xpath = new DOMXPath($dom);
 
+        $journalMetaNode = $xpath->query('//article/front/journal-meta')->item(0);
+
         // Add Journal identifier for pmc and remove unsupported journal identifiers
         $journalId = $this->nlmTitle($context);
         $journalIdNode = $dom->createElement('journal-id', $journalId);
         $journalIdNode->setAttribute('journal-id-type', 'pmc');
-        $journalMetaNode = $xpath->query('//article/front/journal-meta')->item(0);
-        $journalMetaChildElement = $xpath->query('//article/front/journal-meta/*[1]')->item(0);
+        $journalMetaChildElement = $xpath->query('*[1]', $journalMetaNode)->item(0);
         $journalMetaNode->insertBefore($journalIdNode, $journalMetaChildElement);
         $journalIdNodes = $xpath->query(
-            "//article/front/journal-meta/journal-id[@journal-id-type='ojs' or @journal-id-type='publisher']"
+            "journal-id[@journal-id-type='ojs' or @journal-id-type='publisher']",
+            $journalMetaNode
         );
         foreach ($journalIdNodes as $node) { /** @var $node DOMNode **/
             $node->parentNode->removeChild($node);
@@ -684,30 +694,33 @@ class PubmedCentralExportPlugin extends PubObjectsExportPlugin implements HasTas
         $nlmJournalTitleNode = $dom->createElement('abbrev-journal-title');
         $nlmJournalTitleNode->setAttribute('abbrev-type', 'nlm-ta');
         $nlmJournalTitleNode->appendChild($dom->createTextNode($journalId));
-        $journalTitleNode =  $xpath->query("//article/front/journal-meta/journal-title-group")->item(0);
+        $journalTitleNode =  $xpath->query("journal-title-group", $journalMetaNode)->item(0);
         $journalTitleNode->appendChild($nlmJournalTitleNode);
 
         // remove contrib in journal-meta if not an editor (only author or editor type is allowed)
         $journalContribNodes = $xpath->query(
-            "//article/front/journal-meta/contrib-group/contrib[not(@contrib-type='editor')]"
+            "contrib-group/contrib[not(@contrib-type='editor')]",
+            $journalMetaNode
         );
         foreach ($journalContribNodes as $node) { /** @var $node DOMNode **/
             $node->parentNode->removeChild($node);
         }
 
+        $articleMetaNode = $xpath->query("//article/front/article-meta")->item(0);
+
+        // change pub-date publication-format from epub to electronic
+        $pubDateNode = $xpath->query("pub-date[@publication-format='epub']", $articleMetaNode)->item(0);
+        $pubDateNode?->setAttribute('publication-format', 'electronic');
+
         // set author contrib-type on contrib nodes
-        $articleContribNodes = $xpath->query("//article/front/article-meta/contrib-group/contrib");
+        $articleContribNodes = $xpath->query("contrib-group/contrib", $articleMetaNode);
         foreach ($articleContribNodes as $node) {
             $node->setAttribute('contrib-type', 'author');
         }
 
-        // change pub-date publication-format from epub to electronic
-        $pubDateNode = $xpath->query("//article/front/article-meta/pub-date[@publication-format='epub']")->item(0);
-        $pubDateNode?->setAttribute('publication-format', 'electronic');
-
         // move name out of name-alternatives if only one name is present for a contrib
         // as name-alternatives must contain more than 1 child element for PMC
-        $nameAlternativesNodes = $xpath->query("//article/front/article-meta/contrib-group/contrib/name-alternatives");
+        $nameAlternativesNodes = $xpath->query("contrib-group/contrib/name-alternatives", $articleMetaNode);
         foreach ($nameAlternativesNodes as $node) { /** @var $node DOMNode **/
             $names = $xpath->query('./name', $node);
             if ($names->length > 1) {
@@ -732,16 +745,15 @@ class PubmedCentralExportPlugin extends PubObjectsExportPlugin implements HasTas
         // generate an elocation id from submission id for now as either elocation id or fpage are required by PMC
         // @todo consider in relation to https://github.com/pkp/pkp-lib/issues/4695 and the change in number
         // from previous ORE deposits to PMC under f1000
-        $fpageNode = $xpath->query("//article/front/article-meta/fpage")->item(0);
+        $fpageNode = $xpath->query("fpage", $articleMetaNode)->item(0);
         if (!$fpageNode) {
             $elocationNode = $dom->createElement('elocation-id');
             $elocationNode->appendChild($dom->createTextNode($submissionId));
-            $articleMetaNode = $xpath->query("//article/front/article-meta")->item(0);
-            $pubHistoryNode = $xpath->query("//article/front/article-meta/pub-history")->item(0);
+            $pubHistoryNode = $xpath->query("pub-history", $articleMetaNode)->item(0);
             if ($pubHistoryNode) {
                 $articleMetaNode->insertBefore($elocationNode, $pubHistoryNode);
             } else {
-                $permissionsNode = $xpath->query("//article/front/article-meta/permissions")->item(0);
+                $permissionsNode = $xpath->query("permissions", $articleMetaNode)->item(0);
                 $articleMetaNode->insertBefore($elocationNode, $permissionsNode);
             }
         }
@@ -754,12 +766,11 @@ class PubmedCentralExportPlugin extends PubObjectsExportPlugin implements HasTas
                 $linkElement->setAttribute('content-type', 'xml');
             }
             $linkElement->setAttribute('xlink:href', $filename);
-            $uriNode = $xpath->query("//article/front/article-meta/self-uri")->item(0);
+            $uriNode = $xpath->query("self-uri", $articleMetaNode)->item(0);
             if ($uriNode) {
                 $uriNode->parentNode->insertBefore($linkElement, $uriNode);
             } else {
-                $abstractNode = $xpath->query("//article/front/article-meta/abstract")->item(0);
-                $articleMetaNode = $xpath->query("//article/front/article-meta")->item(0);
+                $abstractNode = $xpath->query("abstract", $articleMetaNode)->item(0);
                 $articleMetaNode->insertBefore($linkElement, $abstractNode);
             }
         }
@@ -842,7 +853,7 @@ class PubmedCentralExportPlugin extends PubObjectsExportPlugin implements HasTas
 
         $warnings = $filteredXml->getElementsByTagName('warning');
         foreach ($warnings as $warning) {
-            // @todo decide how to handle warnings - add to errors or continue?
+            // @todo decide how to handle warnings - add to errors or continue? Or add validation setting for users?
             error_log('PMC Style Warning: ' . $warning->textContent);
         }
         return !empty($details) ? $details : true;

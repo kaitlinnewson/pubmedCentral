@@ -41,8 +41,8 @@ msgstr "Connection Details"
 
 msgid "plugins.importexport.pmc.downloadWarning"
 msgstr ""
-"Downloaded packages should not be sent to PubMed Central. Please unzip the packages first, "
-"and send the article packages to PubMed Central."
+"When exporting multiple articles, downloaded packages should not be sent to PubMed Central. "
+" Please unzip the packages first and send the article-level zip packages to PubMed Central."
 
 msgid "plugins.importexport.pmc.export.success"
 msgstr "The export was executed successfully!"
@@ -72,6 +72,9 @@ msgstr ""
 
 msgid "plugins.importexport.pmc.export.failure.creatingFile"
 msgstr "Failed to create zip file. The system returned errors: '{$param}'."
+
+msgid "plugins.importexport.pmc.export.failure.openingFile"
+msgstr "Failed to open zip file: '{$path}'."
 
 msgid "plugins.importexport.pmc.export.failure.addingFile"
 msgstr "Unable to add file {$filePath} to PMC ZIP. The system returned an error: '{$param}'."
