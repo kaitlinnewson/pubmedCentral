@@ -247,7 +247,7 @@ class PubmedCentralExportPlugin extends PubObjectsExportPlugin implements HasTas
 
         // If the JATS document is system-generated, modify it to ensure it meets PMC requirements.
         if ($document->isDefaultContent) {
-            $modifiedXml = $this->modifyJats($xml, $submissionId, $articleFilenames, $nlmTitle);
+            $modifiedXml = $this->modifyDefaultJats($xml, $submissionId, $articleFilenames, $nlmTitle);
             if (is_array($modifiedXml)) {
                 $errorMessage = $this->convertErrorMessage($modifiedXml);
                 if (!$isDownload) {
@@ -257,8 +257,7 @@ class PubmedCentralExportPlugin extends PubObjectsExportPlugin implements HasTas
             }
             $returnXml = $modifiedXml;
         } else {
-            // @todo need to insert filenames into uploaded jats xml
-            $returnXml = $xml;
+            $returnXml = $this->modifyCustomJats($xml, $articleFilenames);
         }
 
         // Validate the XML document.
@@ -407,7 +406,7 @@ class PubmedCentralExportPlugin extends PubObjectsExportPlugin implements HasTas
         $genreDao = DAORegistry::getDAO('GenreDAO'); /** @var GenreDAO $genreDao */
         $genres = $genreDao->getEnabledByContextId($context->getId());
 
-        $zipPath = tempnam(sys_get_temp_dir(), 'tmp');
+        $zipPath = tempnam(sys_get_temp_dir(), 'PubmedCentralExport_');
         $zip = new ZipArchive();
         if ($zip->open($zipPath, ZipArchive::CREATE) !== true) {
             $errorMessage = $this->convertErrorMessage(['plugins.importexport.pmc.export.failure.creatingFile', $zip->getStatusString()]);
@@ -502,12 +501,13 @@ class PubmedCentralExportPlugin extends PubObjectsExportPlugin implements HasTas
      */
     private function createZipCollection(array $objects, Context $context): array
     {
-        $finalZipPath = tempnam(sys_get_temp_dir(), 'tmp');
+        $finalZipPath = tempnam(sys_get_temp_dir(), 'PubmedCentralExport_');
         $finalZip = new ZipArchive();
         if ($finalZip->open($finalZipPath, ZipArchive::CREATE) !== true) {
             return ['error' => ['plugins.importexport.pmc.export.failure.creatingFile', $finalZip->getStatusString()]];
         }
 
+        $createdPaths = [];
         foreach ($objects as $object) {
             $zipPackage = $this->createZip($object, $context, true);
             if (empty($zipPackage['path']) || empty($zipPackage['filename'])) {
@@ -526,9 +526,14 @@ class PubmedCentralExportPlugin extends PubObjectsExportPlugin implements HasTas
                 unlink($zipPackage['path']);
                 return ['error' => ['plugins.importexport.pmc.export.failure.creatingFile', $finalZip->getStatusString()]];
             }
+            $createdPaths[] = $zipPackage['path'];
         }
         $finalZip->close();
-        // @todo clean up packages from createzip?
+
+        // Clean up temporary zip files.
+        foreach ($createdPaths as $createdPath) {
+            unlink($createdPath);
+        }
         return ['path' => $finalZipPath];
     }
 
@@ -664,7 +669,7 @@ class PubmedCentralExportPlugin extends PubObjectsExportPlugin implements HasTas
     /**
      * Modify the JATS XML to meet PMC requirements.
      */
-    public function modifyJats(
+    protected function modifyDefaultJats(
         string $importedJats,
         int $submissionId,
         ?array $articleFilenames,
@@ -812,11 +817,53 @@ class PubmedCentralExportPlugin extends PubObjectsExportPlugin implements HasTas
     }
 
     /**
+     * Modify an uploaded JATS document to meet PMC requirements.
+     */
+    protected function modifyCustomJats(
+        string $importedJats,
+        array $articleFilenames
+    ): string|array {
+        $dom = new DOMDocument();
+        $dom->preserveWhiteSpace = false;
+
+        if (!$dom->loadXML($importedJats)) {
+            return ['plugins.importexport.pmc.export.failure.loadJats'];
+        }
+
+        $xpath = new DOMXPath($dom);
+
+        if (!$articleMetaNode = $xpath->query("//article/front/article-meta")->item(0)) {
+            return ['plugins.importexport.pmc.export.failure.jatsNodeMissing', 'article-meta'];
+        }
+
+        foreach ($articleFilenames ?? [] as $filename) {
+            $linkElement = $dom->createElement('self-uri');
+            if (str_ends_with(strtolower($filename), '.pdf')) {
+                $linkElement->setAttribute('content-type', 'pdf');
+            } elseif (str_ends_with(strtolower($filename), '.xml')) {
+                $linkElement->setAttribute('content-type', 'xml');
+            }
+            $linkElement->setAttribute('xlink:href', $filename);
+            $uriNode = $xpath->query("self-uri", $articleMetaNode)->item(0);
+            if ($uriNode) {
+                $uriNode->parentNode->insertBefore($linkElement, $uriNode);
+            } else {
+                if (!$abstractNode = $xpath->query("abstract", $articleMetaNode)->item(0)) {
+                    return ['plugins.importexport.pmc.export.failure.jatsNodeMissing', 'abstract'];
+                }
+                $articleMetaNode->insertBefore($linkElement, $abstractNode);
+            }
+        }
+
+        return $dom->saveXML();
+    }
+
+    /**
      * Validate a JATS XML document against the DTD and the NLM style checker XSL.
      *
      * @return true|string true if valid, or an error message.
      */
-    public function validateJats(DOMDocument $importedJats): true|string
+    protected function validateJats(DOMDocument $importedJats): true|string
     {
         libxml_use_internal_errors(true);
 
