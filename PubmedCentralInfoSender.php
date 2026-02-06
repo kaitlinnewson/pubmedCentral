@@ -1,7 +1,7 @@
 <?php
 
 /**
- * @file plugins/importexport/pubmedCentral/PubmedCentralInfoSender.php
+ * @file PubmedCentralInfoSender.php
  *
  * Copyright (c) 2026 Simon Fraser University
  * Copyright (c) 2026 John Willinsky
@@ -9,7 +9,7 @@
  *
  * @class PubmedCentralInfoSender
  *
- * @brief Scheduled task to send deposits to Pubmed Central.
+ * @brief Scheduled task to send deposits to PubMed Central.
  */
 
 namespace APP\plugins\generic\pubmedCentral;
@@ -26,8 +26,7 @@ use PKP\scheduledTask\ScheduledTaskHelper;
 
 class PubmedCentralInfoSender extends ScheduledTask
 {
-    // @todo not currently working, may be partially due to plugin registry issue
-    public PubmedCentralExportPlugin $plugin;
+    public ?PubmedCentralExportPlugin $plugin = null;
 
     /**
      * Constructor.
@@ -69,8 +68,6 @@ class PubmedCentralInfoSender extends ScheduledTask
         $journals = $this->getJournals();
 
         foreach ($journals as $journal) {
-            // load pubIds for this journal
-            PluginRegistry::loadCategory('pubIds', true, $journal->getId());
             if ($journal->getData(Context::SETTING_DOI_VERSIONING)) {
                 $depositablePublications = $plugin->getAllDepositablePublications($journal);
                 if (count($depositablePublications)) {
@@ -127,7 +124,6 @@ class PubmedCentralInfoSender extends ScheduledTask
     protected function registerObjects(array $objects, Journal $journal): void
     {
         $plugin = $this->plugin;
-        // @todo fix for pmc
         foreach ($objects as $object) {
             // Deposit the JSON
             $result = $plugin->depositXML([$object], $journal);
@@ -141,16 +137,14 @@ class PubmedCentralInfoSender extends ScheduledTask
      * Add execution log entry
      * @throws Exception
      */
-    protected function addLogEntry(array $errors): void
+    protected function addLogEntry(array $error): void
     {
-        foreach ($errors as $error) {
-            if (!is_array($error) || count($error) === 0) {
-                throw new Exception('Invalid error message');
-            }
-            $this->addExecutionLogEntry(
-                __($error[0], ['param' => $error[1] ?? null]),
-                ScheduledTaskHelper::SCHEDULED_TASK_MESSAGE_TYPE_WARNING
-            );
+        if (count($error) === 0) {
+            throw new Exception('Invalid error message');
         }
+        $this->addExecutionLogEntry(
+            __($error[0], ['param' => $error[1] ?? null]),
+            ScheduledTaskHelper::SCHEDULED_TASK_MESSAGE_TYPE_WARNING
+        );
     }
 }
