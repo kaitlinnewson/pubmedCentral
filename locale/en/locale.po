@@ -44,14 +44,8 @@ msgstr ""
 "When exporting multiple articles, downloaded packages should not be sent to PubMed Central. "
 " Please unzip the packages first and send the article-level zip packages to PubMed Central."
 
-msgid "plugins.importexport.pmc.export.success"
-msgstr "The export was executed successfully!"
-
 msgid "plugins.importexport.pmc.export.errors"
-msgstr "One or more of the deposits failed. The system returned errors: '{$param}'"
-
-msgid "plugins.importexport.pmc.export.failure.connection"
-msgstr "Failed to connect to the FTP server at {$host}."
+msgstr "One or more of the deposits failed. Check the individual article status for details."
 
 msgid "plugins.importexport.pmc.export.failure.settings"
 msgstr "To export the issues to PubMed Central you must setup the credentials in the settings tab."
@@ -65,19 +59,34 @@ msgstr ""
 "one PDF or XML galley file for this publication and try again."
 
 msgid "plugins.importexport.pmc.export.failure.creatingFile"
-msgstr "Failed to create zip file. The system returned errors: '{$param}'."
+msgstr "Failed to create zip file. The system returned an error: '{$param}'."
+
+msgid "plugins.importexport.pmc.export.failure.submissionVersion"
+msgstr "{$version}, Submission ID {$submissionId}: {$error}"
 
 msgid "plugins.importexport.pmc.export.failure.openingFile"
-msgstr "Failed to open zip file: '{$path}'."
+msgstr "Failed to open zip file: '{$param}'."
 
 msgid "plugins.importexport.pmc.export.failure.addingFile"
-msgstr "Unable to add file {$filePath} to PMC ZIP. The system returned an error: '{$param}'."
+msgstr "Unable to add file to PMC ZIP. The system returned an error: '{$param}'."
 
 msgid "plugins.importexport.pmc.export.failure.jatsValidation"
 msgstr "JATS validation failed. The system returned validation errors: '{$param}'"
 
+msgid "plugins.importexport.pmc.export.failure.xslTransform"
+msgstr "Unable to transform XSL for style checking."
+
+msgid "plugins.importexport.pmc.export.failure.xslFileNotFound"
+msgstr "Unable to transform XSL for style checking - XSL file not found."
+
 msgid "plugins.importexport.pmc.export.failure.jatsModification"
 msgstr "JATS modifications failed. The system returned errors: '{$param}'"
+
+msgid "plugins.importexport.pmc.export.failure.loadJats"
+msgstr "Failed to convert JATS to XML for modifications."
+
+msgid "plugins.importexport.pmc.export.failure.jatsNodeMissing"
+msgstr "Failed to convert JATS - node not found: '{$param}'"
 
 msgid "plugins.importexport.pmc.settings.form.automaticRegistration.description"
 msgstr ""
