@@ -8,7 +8,7 @@ msgstr ""
 "configuring your credentials below."
 
 msgid "plugins.importexport.pmc.description.short"
-msgstr "This plugin may be used to export your journal content to PubMed Central."
+msgstr "Export journal articles to PubMed Central."
 
 msgid "plugins.importexport.pmc.ftpLibraryMissing"
 msgstr ""

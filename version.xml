@@ -15,5 +15,6 @@
 	<type>plugins.generic</type>
 	<release>1.0.0.0</release>
 	<date>2026-01-30</date>
+    <lazy-load>1</lazy-load>
 	<class>PubmedCentralPlugin</class>
 </version>
