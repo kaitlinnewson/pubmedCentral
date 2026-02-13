@@ -105,6 +105,8 @@ class PubmedCentralInfoSender extends ScheduledTask
                 empty($connectionSettings['host']) ||
                 empty($connectionSettings['username']) ||
                 empty($connectionSettings['password']) ||
+                !$plugin->getSetting($journalId, 'enabled') ||
+                !$plugin->getSetting($journalId, 'nlmTitle') ||
                 !$plugin->getSetting($journalId, 'automaticRegistration')
             ) {
                 continue;
