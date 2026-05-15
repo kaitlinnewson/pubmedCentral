@@ -10,4 +10,4 @@
  * @brief Wrapper for the PubMed Central export plugin.
  */
 
-return new \APP\plugins\generic\pubmedCentral\PubmedCentralExportPlugin();
+return new \APP\plugins\generic\pubmedCentral\PubmedCentralPlugin();
