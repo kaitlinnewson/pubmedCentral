@@ -37,6 +37,12 @@
 				{fbvElement type="text" required=true id="nlmTitle" value=$nlmTitle label="plugins.importexport.pmc.settings.form.nlmTitle" maxlength="100" size=$fbvStyles.size.MEDIUM}
 			{/fbvFormSection}
 
+			{capture assign="namingTypeTitle"}{translate key="plugins.importexport.pmc.settings.form.namingType"}{/capture}
+			{fbvFormSection list=true title=$namingTypeTitle translate=false}
+				{fbvElement type="radio" id="namingType-volumeIssue" name="namingType" value="volumeIssue" checked=$namingType|compare:"volumeIssue" label="plugins.importexport.pmc.settings.form.namingType.volumeIssue"}
+				{fbvElement type="radio" id="namingType-articleNumber" name="namingType" value="articleNumber" checked=$namingType|compare:"articleNumber" label="plugins.importexport.pmc.settings.form.namingType.articleNumber"}
+			{/fbvFormSection}
+
 			{capture assign="sectionTitle"}{translate key="plugins.importexport.pmc.endpoint"}{/capture}
 			{fbvFormSection id="formSection" title=$sectionTitle translate=false class="endpointContainer"}
 				{fbvElement type="text" id="host" value=$host label="plugins.importexport.pmc.host" maxlength="120" size=$fbvStyles.size.MEDIUM}

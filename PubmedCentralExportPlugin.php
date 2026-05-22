@@ -66,27 +66,46 @@ class PubmedCentralExportPlugin extends PubObjectsExportPlugin implements HasTas
 
     /**
      * Create a filename for files created in the plugin, removing any invalid characters.
+     * The naming scheme is determined by the journal's "namingType" setting:
+     *  - volumeIssue: nlmTitle-volume-issue-firstPage(-timestamp)
+     *  - articleNumber: nlmTitle-articleNumber(-timestamp)
      *
      * @param bool $ts Whether to include a timestamp in the filename.
      * @param string|null $fileExtension The optional file extension to include in the filename.
      */
     private function buildFileName(
         string $nlmTitle,
+        Context $context,
         Submission|Publication|null $object = null,
         bool $ts = false,
         ?string $fileExtension = null
     ): string {
-        // @todo add setting to select vol/issue naming vs. continuous pub naming?
-        // @todo make final decision on article naming - using publication ID for now.
-        $publicationId = $object instanceof Submission ? $object->getCurrentPublication()->getId() : $object?->getId();
-        $nlmTitle = preg_replace('/[^a-zA-Z0-9]/', '', $nlmTitle);
-        $timeStamp = date('YmdHis');
-        return strtolower(
-            $nlmTitle .
-            ($publicationId ? '-' . $publicationId : '') .
-            ($ts ? '-' . $timeStamp : '') .
-            ($fileExtension ? '.' . $fileExtension : '')
+        $publication = $object instanceof Submission ? $object->getCurrentPublication() : $object;
+        $parts = [$nlmTitle];
+
+        if ($publication) {
+            $namingType = $this->getSetting($context->getId(), 'namingType') ?: 'volumeIssue';
+            if ($namingType === 'articleNumber') {
+                $parts[] = $publication->getData('articleNumber');
+            } else {
+                $issue = Repo::issue()->get($publication->getIssueId());
+                $parts[] = $issue->getVolume();
+                $parts[] = $issue->getNumber();
+                $parts[] = $publication->getStartingPage();
+            }
+        }
+
+        if ($ts) {
+            $parts[] = date('YmdHis');
+        }
+
+        // PMC file names cannot contain spaces or special characters (such as ?, %, #, /, or :)
+        $parts = array_map(
+            fn ($part) => preg_replace('/[^a-zA-Z0-9]/', '', (string) $part),
+            $parts
         );
+
+        return strtolower(implode('-', $parts) . ($fileExtension ? '.' . $fileExtension : ''));
     }
 
     /**
@@ -144,10 +163,10 @@ class PubmedCentralExportPlugin extends PubObjectsExportPlugin implements HasTas
                 $request->redirect(null, null, null, ['plugin', $this->getName()], null, $tab);
             } else {
                 $nlmTitle = $this->nlmTitle($context);
-                $filename = $this->buildFileName($nlmTitle, null, false, 'zip');
+                $filename = $this->buildFileName($nlmTitle, $context, null, false, 'zip');
                 if (count($objects) == 1) {
                     $object = array_shift($objects);
-                    $filename = $this->buildFileName($nlmTitle, $object, true, 'zip');
+                    $filename = $this->buildFileName($nlmTitle, $context, $object, true, 'zip');
                 }
                 $fileManager = new FileManager();
                 $fileManager->downloadByPath(
@@ -379,15 +398,21 @@ class PubmedCentralExportPlugin extends PubObjectsExportPlugin implements HasTas
         $genreDao = DAORegistry::getDAO('GenreDAO'); /** @var GenreDAO $genreDao */
         $genres = $genreDao->getEnabledByContextId($context->getId());
 
+        $publication = $object instanceof Submission ? $object->getCurrentPublication() : $object;
+        $locale = $object->getData('locale');
+
+        // Ensure the metadata required by the configured naming type is present
+        if ($metadataError = $this->validateNamingMetadata($publication, $context)) {
+            return ['error' => $metadataError];
+        }
+
         $zipPath = tempnam(sys_get_temp_dir(), 'PubmedCentralExport_');
         $zip = new ZipArchive();
         if ($zip->open($zipPath, ZipArchive::CREATE) !== true) {
             return ['error' => ['plugins.importexport.pmc.export.failure.creatingFile', $zip->getStatusString()]];
         }
 
-        $publication = $object instanceof Submission ? $object->getCurrentPublication() : $object;
-        $locale = $object->getData('locale');
-        $filename = $this->buildFileName($nlmTitle, $object);
+        $filename = $this->buildFileName($nlmTitle, $context, $object);
 
         // Add a PDF article galley file
         $pdfFilesFound = 0;
@@ -424,7 +449,7 @@ class PubmedCentralExportPlugin extends PubObjectsExportPlugin implements HasTas
             // @todo make sure files meet 2GB max size requirement?
             $galleyPath = $fileService->get($galleyFile->getData('fileId'))->path;
             $extension = pathinfo($galleyPath, PATHINFO_EXTENSION);
-            $galleyFilename = $this->buildFileName($nlmTitle, $object, false, $extension);
+            $galleyFilename = $this->buildFileName($nlmTitle, $context, $object, false, $extension);
             $galleyFilePath = $filename . '/' . $galleyFilename;
             $articlePdfFilename = $galleyFilename;
 
@@ -448,11 +473,11 @@ class PubmedCentralExportPlugin extends PubObjectsExportPlugin implements HasTas
         if (is_array($document)) {
             return ['error' => $document];
         } else {
-            $articlePathName = $filename . '/' . $this->buildFileName($nlmTitle, $object, false, 'xml');
+            $articlePathName = $filename . '/' . $this->buildFileName($nlmTitle, $context, $object, false, 'xml');
             if (!$zip->addFromString($articlePathName, $document)) {
                 return ['error' => ['plugins.importexport.pmc.export.failure.addingFile', $zip->getStatusString()]];
             }
-            $zipDetails['filename'] = $this->buildFileName($nlmTitle, $object, true);
+            $zipDetails['filename'] = $this->buildFileName($nlmTitle, $context, $object, true);
             $zipDetails['path'] = $zipPath;
             $zip->close();
         }
@@ -732,26 +757,6 @@ class PubmedCentralExportPlugin extends PubObjectsExportPlugin implements HasTas
             }
         }
 
-        // generate an elocation id from submission id for now as either elocation id or fpage are required by PMC
-        // @todo consider in relation to https://github.com/pkp/pkp-lib/issues/4695 and the change in number
-        // from previous ORE deposits to PMC under f1000
-        $fpageNode = $xpath->query("fpage", $articleMetaNode)->item(0);
-        if (!$fpageNode) {
-            $elocationNode = $dom->createElement('elocation-id');
-            $elocationNode->appendChild($dom->createTextNode($submissionId));
-            $pubHistoryNode = $xpath->query("pub-history", $articleMetaNode)->item(0);
-            if ($pubHistoryNode) {
-                $articleMetaNode->insertBefore($elocationNode, $pubHistoryNode);
-            } else {
-                $permissionsNode = $xpath->query("permissions", $articleMetaNode)->item(0);
-                if ($permissionsNode) {
-                    $articleMetaNode->insertBefore($elocationNode, $permissionsNode);
-                } else {
-                    return ['plugins.importexport.pmc.export.failure.jatsNodeMissing', 'permissions'];
-                }
-            }
-        }
-
         // Remove any existing self-uri PDF links
         $selfUriPdfNodes = $xpath->query(
             "self-uri[@content-type='pdf' or @content-type='application/pdf']",
@@ -894,6 +899,43 @@ class PubmedCentralExportPlugin extends PubObjectsExportPlugin implements HasTas
             error_log('PMC Style Warning: ' . $warning->textContent);
         }
         return !empty($styleCheckErrors) ? implode(PHP_EOL, $styleCheckErrors) : true;
+    }
+
+    /**
+     * Validate that the publication has the metadata required to build the
+     * filename based on the "namingType" setting.
+     */
+    protected function validateNamingMetadata(Publication $publication, Context $context): ?array
+    {
+        $namingType = $this->getSetting($context->getId(), 'namingType') ?: 'volumeIssue';
+        $missing = [];
+
+        if ($namingType === 'articleNumber') {
+            if (!$publication->getData('articleNumber')) {
+                $missing[] = __('submission.articleNumber');
+            }
+        } else {
+            $issueId = $publication->getIssueId();
+            $issue = $issueId ? Repo::issue()->get($issueId) : null;
+            if (!$issue) {
+                $missing[] = __('issue.issue');
+            } else {
+                if (!$issue->getVolume()) {
+                    $missing[] = __('issue.volume');
+                }
+                if (!$issue->getNumber()) {
+                    $missing[] = __('issue.number');
+                }
+            }
+            if (!$publication->getStartingPage()) {
+                $missing[] = __('editor.issues.pages');
+            }
+        }
+
+        if (!empty($missing)) {
+            return ['plugins.importexport.pmc.export.failure.missingMetadata', implode(', ', $missing)];
+        }
+        return null;
     }
 
     /**

@@ -88,6 +88,11 @@ msgstr "Failed to convert JATS to XML for modifications."
 msgid "plugins.importexport.pmc.export.failure.jatsNodeMissing"
 msgstr "Failed to convert JATS - node not found: '{$param}'"
 
+msgid "plugins.importexport.pmc.export.failure.missingMetadata"
+msgstr ""
+"The selected package and file naming scheme requires the following metadata, "
+"which is missing: '{$param}'"
+
 msgid "plugins.importexport.pmc.settings.form.automaticRegistration.description"
 msgstr ""
 "Deposit articles automatically to PubMed Central. Please note that this may "
@@ -107,6 +112,15 @@ msgstr ""
 "The NLM Title Abbreviation for the journal. "
 "If you do not know the abbreviation, <a href=\"https://pmc.ncbi.nlm.nih.gov/journals/\">search the PubMed Central journals list</a>"
 " or contact PubMed Central."
+
+msgid "plugins.importexport.pmc.settings.form.namingType"
+msgstr "Package and File Naming Scheme"
+
+msgid "plugins.importexport.pmc.settings.form.namingType.volumeIssue"
+msgstr "Volume/Issue/Page"
+
+msgid "plugins.importexport.pmc.settings.form.namingType.articleNumber"
+msgstr "Article Number"
 
 msgid "plugins.generic.pmc.displayName"
 msgstr "PubMed Central Plugin"
