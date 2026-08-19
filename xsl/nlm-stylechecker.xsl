@@ -26,7 +26,7 @@
  -->
 <!-- ************************************************************************ -->
 <!--                                     NLM STYLECHECKER
-                                           Version 5.47
+                                           Version 5.48
     
     Stylesheet tests an XML instance to determine whether it conforms to correct
     PMC style as defined in the Tagging Guidelines located at:
@@ -77,6 +77,20 @@
      
    PMC Project Revision notes:
 
+   May 11, 2026
+        Cut release branch for Version 5.48.
+        Public release of 2nd quarter changes will occur on June 9, 2026.
+
+   March 23, 2026
+        In doi-format-test, disallow percent signs.
+
+   February 18, 2026
+        Removed clean-up routine from year-check and added more contexts
+        in which to skip the check.
+
+   December 9, 2025: Version 5.47
+        Public release of 4th quarter changes.
+
    December 1, 2025
         Cut release branch for Version 5.47.
         Public release of 4th quarter changes will occur on December 9, 2025.
@@ -84,7 +98,7 @@
    November 25, 2025
         Updated URLs for the tagging guidelines.
 
-   September 9, 2025: Verions 5.46
+   September 9, 2025: Version 5.46
         Public release of 3rd quarter changes.
 
    August 11, 2026
@@ -1013,7 +1027,7 @@
                           not(self::text())])"/>
 
    <!-- Indicate our own version -->
-   <xsl:param name="stylechecker-version"     select="'5.47'"/>
+   <xsl:param name="stylechecker-version"     select="'5.48'"/>
    <xsl:param name="stylechecker-mainline"    select="'nlm-stylechecker5.xsl'"/>
 
    <!-- The 'style' selects the rules that can be applied by the stylechecker.

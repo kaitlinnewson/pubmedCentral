@@ -3821,74 +3821,16 @@
 
 
 
-  <!-- ********************************************************************* -->
+   <!-- *********************************************************** -->
    <!-- Match: year
         1) cannot be empty 
         2) content must be in range
      -->
    <!-- *********************************************************** -->
    <xsl:template match="year">
-		<xsl:call-template name="empty-element-check"/>
+      <xsl:call-template name="empty-element-check"/>
       <xsl:call-template name="year-check"/>
       <xsl:apply-templates select="." mode="output"/>
-		</xsl:template>
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+   </xsl:template>
 
 </xsl:stylesheet>
