@@ -52,6 +52,23 @@ the settings under Settings → Distribution → Metadata → Article Number.
 
 If DOI versioning is enabled in OJS, then the user can deposit each major version of an article to PubMed Central.
 
+## Uploaded JATS XML
+
+If a publication has an uploaded JATS XML file, then that will be exported in the plugin instead of the OJS-generated JATS.
+Uploaded JATS XML files will also be validated against the DTD and StyleChecker.
+
+## Troubleshooting
+
+If you are receiving validation errors, ensure you have entered the required metadata in your journal settings and/or
+the publication. If you are using your own JATS XML documents, then you may need to modify the metadata in the JATS
+XML to meet the requirements of PubMed Central.
+
+## PubMed Central StyleChecker Updates
+
+The StyleChecker validation files are periodically updated by PubMed Central. Updated file packages can be downloaded from
+[the Downloadable StyleChecker page](https://pmc.ncbi.nlm.nih.gov/pub/stylechecker-info/) and placed in the `xsl` directory,
+(`style-reporter.xsl` is not used and can be omitted).
+
 ## License
 
 This plugin is licensed under the GNU General Public License v3.

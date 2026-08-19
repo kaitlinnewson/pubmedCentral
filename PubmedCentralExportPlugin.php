@@ -73,7 +73,7 @@ class PubmedCentralExportPlugin extends PubObjectsExportPlugin implements HasTas
      * @param bool $ts Whether to include a timestamp in the filename.
      * @param string|null $fileExtension The optional file extension to include in the filename.
      */
-    private function buildFileName(
+    protected function buildFileName(
         string $nlmTitle,
         Context $context,
         Submission|Publication|null $object = null,
@@ -123,7 +123,7 @@ class PubmedCentralExportPlugin extends PubObjectsExportPlugin implements HasTas
         $shouldRedirect = true
     ): void {
         $context = $request->getContext();
-        if ($request->getUserVar(PubObjectsExportPlugin::EXPORT_ACTION_DEPOSIT)) {
+        if ($this->_checkForExportAction(PubObjectsExportPlugin::EXPORT_ACTION_DEPOSIT)) {
             $resultErrors = [];
             $result = $this->depositXML($objects, $context, $noValidation);
             if (is_array($result)) {
@@ -151,7 +151,7 @@ class PubmedCentralExportPlugin extends PubObjectsExportPlugin implements HasTas
             }
             // Redirect back to the right tab
             $request->redirect(null, null, null, ['plugin', $this->getName()], null, $tab);
-        } elseif ($request->getUserVar(PubObjectsExportPlugin::EXPORT_ACTION_EXPORT)) {
+        } elseif ($this->_checkForExportAction(PubObjectsExportPlugin::EXPORT_ACTION_EXPORT)) {
             $path = $this->createZipCollection($objects, $context, $noValidation);
             if (!empty($path['error'])) {
                 $this->_sendNotification(
@@ -243,7 +243,7 @@ class PubmedCentralExportPlugin extends PubObjectsExportPlugin implements HasTas
 
         // If the JATS document is system-generated, modify it to ensure it meets PMC requirements.
         if ($document->isDefaultContent) {
-            $returnXml = $this->modifyDefaultJats($xml, $submissionId, $articlePdfFilename, $nlmTitle);
+            $returnXml = $this->modifyDefaultJats($xml, $articlePdfFilename, $nlmTitle);
         } else {
             $returnXml = $this->modifyCustomJats($xml, $articlePdfFilename);
         }
@@ -292,11 +292,11 @@ class PubmedCentralExportPlugin extends PubObjectsExportPlugin implements HasTas
     }
 
     /**
-     * Get the NLM title setting value.
+     * Get the NLM title setting value, or an empty string when it has not been set.
      */
     public function nlmTitle(Context $context): string
     {
-        return ($this->getSetting($context->getId(), 'nlmTitle'));
+        return $this->getSetting($context->getId(), 'nlmTitle') ?? '';
     }
 
     /**
@@ -352,6 +352,8 @@ class PubmedCentralExportPlugin extends PubObjectsExportPlugin implements HasTas
                 if ($fp) {
                     try {
                         $fs->writeStream($packagedObject['filename'] . '.zip', $fp);
+                        // Mark the object as registered.
+                        $this->updateStatus($object, PubObjectsExportPlugin::EXPORT_STATUS_REGISTERED);
                     } catch (Throwable $e) {
                         $this->updateStatus(
                             $object,
@@ -359,20 +361,16 @@ class PubmedCentralExportPlugin extends PubObjectsExportPlugin implements HasTas
                             $e->getMessage()
                         );
                         $errors = true;
-                        continue;
                     } finally {
                         fclose($fp);
-                    }
-                    // Mark the object as registered.
-                    $this->updateStatus($object, PubObjectsExportPlugin::EXPORT_STATUS_REGISTERED);
-                    if (!unlink($packagedObject['path'])) {
-                        error_log('Failed to delete zip file after deposit: ' . $packagedObject['path']);
+                        $this->deleteTempFile($packagedObject['path']);
                     }
                 } else {
                     $errorMessage = $this->convertErrorMessage(
                         ['plugins.importexport.pmc.export.failure.openingFile', $packagedObject['path']]
                     );
                     $this->updateStatus($object, PubObjectsExportPlugin::EXPORT_STATUS_ERROR, $errorMessage);
+                    $this->deleteTempFile($packagedObject['path']);
                     $errors = true;
                 }
             }
@@ -408,8 +406,12 @@ class PubmedCentralExportPlugin extends PubObjectsExportPlugin implements HasTas
 
         $zipPath = tempnam(sys_get_temp_dir(), 'PubmedCentralExport_');
         $zip = new ZipArchive();
-        if ($zip->open($zipPath, ZipArchive::CREATE) !== true) {
-            return ['error' => ['plugins.importexport.pmc.export.failure.creatingFile', $zip->getStatusString()]];
+        // OVERWRITE avoids the "Using empty file as ZipArchive" deprecation that is
+        // raised when opening the empty file tempnam() has already created.
+        if ($zip->open($zipPath, ZipArchive::CREATE | ZipArchive::OVERWRITE) !== true) {
+            $error = ['plugins.importexport.pmc.export.failure.creatingFile', $zip->getStatusString()];
+            $this->deleteTempFile($zipPath);
+            return ['error' => $error];
         }
 
         $filename = $this->buildFileName($nlmTitle, $context, $object);
@@ -454,7 +456,11 @@ class PubmedCentralExportPlugin extends PubObjectsExportPlugin implements HasTas
             $articlePdfFilename = $galleyFilename;
 
             if ($pdfFilesFound > 0) {
-                return ['error' => ['plugins.importexport.pmc.export.failure.multipleArticleFiles']];
+                return $this->discardZip(
+                    $zip,
+                    $zipPath,
+                    ['plugins.importexport.pmc.export.failure.multipleArticleFiles']
+                );
             }
 
             if (
@@ -463,7 +469,11 @@ class PubmedCentralExportPlugin extends PubObjectsExportPlugin implements HasTas
                     $fileService->fs->read($galleyPath)
                 )
             ) {
-                return ['error' => ['plugins.importexport.pmc.export.failure.addingFile', $zip->getStatusString()]];
+                return $this->discardZip(
+                    $zip,
+                    $zipPath,
+                    ['plugins.importexport.pmc.export.failure.addingFile', $zip->getStatusString()]
+                );
             }
             $pdfFilesFound++;
         }
@@ -471,11 +481,15 @@ class PubmedCentralExportPlugin extends PubObjectsExportPlugin implements HasTas
         // Add article XML to the zip
         $document = $this->exportXML($object, null, $context, $noValidation, $exportErrors, $articlePdfFilename, $genres, $nlmTitle);
         if (is_array($document)) {
-            return ['error' => $document];
+            return $this->discardZip($zip, $zipPath, $document);
         } else {
             $articlePathName = $filename . '/' . $this->buildFileName($nlmTitle, $context, $object, false, 'xml');
             if (!$zip->addFromString($articlePathName, $document)) {
-                return ['error' => ['plugins.importexport.pmc.export.failure.addingFile', $zip->getStatusString()]];
+                return $this->discardZip(
+                    $zip,
+                    $zipPath,
+                    ['plugins.importexport.pmc.export.failure.addingFile', $zip->getStatusString()]
+                );
             }
             $zipDetails['filename'] = $this->buildFileName($nlmTitle, $context, $object, true);
             $zipDetails['path'] = $zipPath;
@@ -493,8 +507,12 @@ class PubmedCentralExportPlugin extends PubObjectsExportPlugin implements HasTas
     {
         $finalZipPath = tempnam(sys_get_temp_dir(), 'PubmedCentralExport_');
         $finalZip = new ZipArchive();
-        if ($finalZip->open($finalZipPath, ZipArchive::CREATE) !== true) {
-            return ['error' => ['plugins.importexport.pmc.export.failure.creatingFile', $finalZip->getStatusString()]];
+        // OVERWRITE avoids the "Using empty file as ZipArchive" deprecation that is
+        // raised when opening the empty file tempnam() has already created.
+        if ($finalZip->open($finalZipPath, ZipArchive::CREATE | ZipArchive::OVERWRITE) !== true) {
+            $error = ['plugins.importexport.pmc.export.failure.creatingFile', $finalZip->getStatusString()];
+            $this->deleteTempFile($finalZipPath);
+            return ['error' => $error];
         }
 
         $createdPaths = [];
@@ -510,24 +528,58 @@ class PubmedCentralExportPlugin extends PubObjectsExportPlugin implements HasTas
                     'submissionId' => $submissionId,
                     'error' => $this->convertErrorMessage($zipPackage['error'])
                 ]);
-                return ['error' => ['plugins.importexport.pmc.export.failure.creatingFile', $errorDetails]];
+                return $this->discardZip(
+                    $finalZip,
+                    $finalZipPath,
+                    ['plugins.importexport.pmc.export.failure.creatingFile', $errorDetails],
+                    $createdPaths
+                );
             }
-            if (!$finalZip->addFile($zipPackage['path'], $zipPackage['filename'] . '.zip')) {
-                unlink($zipPackage['path']);
-                return ['error' => [
-                    'plugins.importexport.pmc.export.failure.creatingFile',
-                    $finalZip->getStatusString()]
-                ];
-            }
+            // Track the package before adding it so that it is cleaned up either way.
             $createdPaths[] = $zipPackage['path'];
+            if (!$finalZip->addFile($zipPackage['path'], $zipPackage['filename'] . '.zip')) {
+                return $this->discardZip(
+                    $finalZip,
+                    $finalZipPath,
+                    ['plugins.importexport.pmc.export.failure.creatingFile', $finalZip->getStatusString()],
+                    $createdPaths
+                );
+            }
         }
+        // The added files are only read when the archive is closed, so the per-article
+        // packages cannot be removed before this point.
         $finalZip->close();
 
-        // Clean up temporary zip files.
         foreach ($createdPaths as $createdPath) {
-            unlink($createdPath);
+            $this->deleteTempFile($createdPath);
         }
         return ['path' => $finalZipPath];
+    }
+
+    /**
+     * Discard a partially built zip file and any temporary files collected for it,
+     * returning the error for the caller.
+     *
+     * @param array $collectedPaths Additional temporary files to remove.
+     */
+    private function discardZip(ZipArchive $zip, string $zipPath, array $error, array $collectedPaths = []): array
+    {
+        $zip->close();
+        $this->deleteTempFile($zipPath);
+        foreach ($collectedPaths as $collectedPath) {
+            $this->deleteTempFile($collectedPath);
+        }
+        return ['error' => $error];
+    }
+
+    /**
+     * Remove a temporary file created during an export.
+     */
+    private function deleteTempFile(string $path): void
+    {
+        if (file_exists($path) && !unlink($path)) {
+            error_log('Failed to delete temporary export file: ' . $path);
+        }
     }
 
     /**
@@ -652,7 +704,6 @@ class PubmedCentralExportPlugin extends PubObjectsExportPlugin implements HasTas
      */
     protected function modifyDefaultJats(
         string $importedJats,
-        int $submissionId,
         ?string $articlePdfFilename,
         string $nlmTitle
     ): string|array {
@@ -902,13 +953,18 @@ class PubmedCentralExportPlugin extends PubObjectsExportPlugin implements HasTas
     }
 
     /**
-     * Validate that the publication has the metadata required to build the
-     * filename based on the "namingType" setting.
+     * Validate that the journal and publication have the metadata required to
+     * build the filename based on the "namingType" setting.
      */
     protected function validateNamingMetadata(Publication $publication, Context $context): ?array
     {
         $namingType = $this->getSetting($context->getId(), 'namingType') ?: 'volumeIssue';
         $missing = [];
+
+        // Every generated package and file name begins with the NLM title abbreviation.
+        if (!$this->nlmTitle($context)) {
+            $missing[] = __('plugins.importexport.pmc.settings.form.nlmTitle');
+        }
 
         if ($namingType === 'articleNumber') {
             if (!$publication->getData('articleNumber')) {
