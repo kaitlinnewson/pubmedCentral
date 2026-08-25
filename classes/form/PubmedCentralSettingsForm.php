@@ -41,6 +41,10 @@ class PubmedCentralSettingsForm extends PubObjectsExportSettingsForm
         foreach ($this->getFormFields() as $fieldName => $fieldType) {
             $this->setData($fieldName, $plugin->getSetting($contextId, $fieldName));
         }
+        // Default to volume/issue naming when no value has been saved.
+        if (!$this->getData('namingType')) {
+            $this->setData('namingType', 'volumeIssue');
+        }
     }
 
     /**
@@ -81,6 +85,7 @@ class PubmedCentralSettingsForm extends PubObjectsExportSettingsForm
             'jatsImported' => 'bool',
             'automaticRegistration' => 'bool',
             'nlmTitle' => 'string',
+            'namingType' => 'string',
             'host' => 'string',
             'port' => 'string',
             'path' => 'string',
@@ -94,6 +99,7 @@ class PubmedCentralSettingsForm extends PubObjectsExportSettingsForm
         return in_array($settingName, [
             'jatsImported',
             'automaticRegistration',
+            'namingType',
             'host',
             'port',
             'path',

@@ -3925,7 +3925,12 @@
             <xsl:text>false</xsl:text>
          </xsl:when>
 
-         <!-- Must be OK!!-->
+         <!-- Percent signs not allowed -->
+         <xsl:when test="contains($normalized-doi,'%')"> 
+            <xsl:text>false</xsl:text>
+         </xsl:when>
+
+         <!-- Must be OK!! -->
          <xsl:otherwise>
             <xsl:text>true</xsl:text>
          </xsl:otherwise>
@@ -11190,7 +11195,7 @@
    <!-- *********************************************************** -->
    <!-- Template: year-check  
    
-        Outside of citation elements be sure that year 
+        In pub-date and date be sure that year 
         elements only contain an integer value 
         between 1700 and 2100, inclusive.
      -->
@@ -11205,24 +11210,20 @@
                or $context/ancestor::nlm-citation
                or $context/ancestor::mixed-citation
                or $context/ancestor::element-citation
-               or $context/ancestor::product">
+               or $context/ancestor::date-in-citation
+               or $context/ancestor::conf-date
+               or $context/ancestor::product
+               or $context/ancestor::related-article
+               or $context/ancestor::related-object
+               or $context/ancestor::std
+               or $context/ancestor::string-date">
             <!-- Don't test these -->
          </xsl:when>
          <xsl:otherwise>
             <xsl:variable name="is-valid-year">
                <xsl:call-template name="is-year">
                   <xsl:with-param name="input">
-                     <xsl:choose>
-                        <xsl:when
-                           test="string-length(translate($context, 'abcdefghijklmnopqrstuvwxyz', '')) &lt; string-length($context)">
-                           <xsl:value-of
-                              select="string(translate($context, 'abcdefghijklmnopqrstuvwxyz', ''))"
-                           />
-                        </xsl:when>
-                        <xsl:otherwise>
-                           <xsl:value-of select="string($context)"/>
-                        </xsl:otherwise>
-                     </xsl:choose>
+                     <xsl:value-of select="string($context)"/>
                   </xsl:with-param>
                </xsl:call-template>
             </xsl:variable>
