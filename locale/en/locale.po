@@ -58,6 +58,12 @@ msgstr ""
 "Multiple article files were found for this publication. Please ensure there is only "
 "one PDF or XML galley file for this publication and try again."
 
+msgid "plugins.importexport.pmc.export.failure.missingArticleFile"
+msgstr ""
+"No PDF article file was found for this publication. PubMed Central requires a PDF "
+"that corresponds to each article XML file. Please ensure the publication has a PDF "
+"galley in the submission language and try again."
+
 msgid "plugins.importexport.pmc.export.failure.creatingFile"
 msgstr "Failed to create zip file. The system returned an error: '{$param}'."
 
@@ -72,6 +78,11 @@ msgstr "Unable to add file to PMC ZIP. The system returned an error: '{$param}'.
 
 msgid "plugins.importexport.pmc.export.failure.jatsValidation"
 msgstr "JATS validation failed. The system returned validation errors: '{$param}'"
+
+msgid "plugins.importexport.pmc.export.warning.jatsVersionUnsupported"
+msgstr ""
+"JATS validation is only supported for JATS 1.2. This document does not "
+"declare the JATS 1.2 DTD, so only the PMC style check was applied to it."
 
 msgid "plugins.importexport.pmc.export.failure.xslTransform"
 msgstr "Unable to transform XSL for style checking."
@@ -92,6 +103,11 @@ msgid "plugins.importexport.pmc.export.failure.missingMetadata"
 msgstr ""
 "The selected package and file naming scheme requires the following metadata, "
 "which is missing: '{$param}'"
+
+msgid "plugins.importexport.pmc.export.failure.missingMediaFile"
+msgstr ""
+"The following file is referenced in the JATS XML but could not be found in the system: '{$param}'."
+"Remove the file from the JATS or upload it to the publication's media files and try again."
 
 msgid "plugins.importexport.pmc.settings.form.automaticRegistration.description"
 msgstr ""

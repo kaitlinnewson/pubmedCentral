@@ -29,6 +29,7 @@ use League\Flysystem\Filesystem;
 use League\Flysystem\Ftp\FtpAdapter;
 use League\Flysystem\Ftp\FtpConnectionOptions;
 use PKP\context\Context;
+use PKP\core\Core;
 use PKP\core\JSONMessage;
 use PKP\db\DAORegistry;
 use PKP\file\FileManager;
@@ -44,6 +45,29 @@ use ZipArchive;
 
 class PubmedCentralExportPlugin extends PubObjectsExportPlugin implements HasTaskScheduler
 {
+    /**
+     * The JATS 1.2 Journal Publishing DTD bundled with the application, and the
+     * identifiers a document uses to name it.
+     */
+    protected const JATS_12_PUBLIC_ID = '-//NLM//DTD JATS (Z39.96) Journal Publishing DTD v1.2 20190208//EN';
+    protected const JATS_12_SYSTEM_ID = 'http://jats.nlm.nih.gov/publishing/1.2/JATS-journalpublishing1.dtd';
+    protected const JATS_12_DTD_PATH = '/dtd/jats/1.2/JATS-journalpublishing1.dtd';
+
+    /**
+     * JATS related-article-type values PMC does not accept, mapped to the nearest
+     * value its style checker allows.
+     */
+    protected const PMC_RELATED_ARTICLE_TYPES = [
+        'expression-of-concern' => 'object-of-concern',
+        'partial-retraction' => 'retracted-article',
+    ];
+
+    /**
+     * Message keys for conditions that do not stop an export but should still be
+     * reported, collected across every object in the export and de-duplicated.
+     */
+    protected array $validationWarnings = [];
+
     /**
      * @copydoc ImportExportPlugin::display()
      */
@@ -149,16 +173,19 @@ class PubmedCentralExportPlugin extends PubObjectsExportPlugin implements HasTas
                     );
                 }
             }
+            $this->sendValidationWarnings($request);
+
             // Redirect back to the right tab
             $request->redirect(null, null, null, ['plugin', $this->getName()], null, $tab);
         } elseif ($this->_checkForExportAction(PubObjectsExportPlugin::EXPORT_ACTION_EXPORT)) {
             $path = $this->createZipCollection($objects, $context, $noValidation);
+            $this->sendValidationWarnings($request);
             if (!empty($path['error'])) {
                 $this->_sendNotification(
                     $request->getUser(),
                     $path['error'][0],
                     Notification::NOTIFICATION_TYPE_ERROR,
-                    $path['error'][1]
+                    $path['error'][1] ?? null
                 );
                 $request->redirect(null, null, null, ['plugin', $this->getName()], null, $tab);
             } else {
@@ -205,6 +232,12 @@ class PubmedCentralExportPlugin extends PubObjectsExportPlugin implements HasTas
         $genres = null,
         ?string $nlmTitle = null
     ): array|string {
+        // PMC requires a PDF corresponding to each article XML file, so a package
+        // without one is never valid. See https://pmc.ncbi.nlm.nih.gov/pub/filespec/
+        if ($articlePdfFilename === null) {
+            return ['plugins.importexport.pmc.export.failure.missingArticleFile'];
+        }
+
         libxml_use_internal_errors(true);
 
         $publication = $object instanceof Publication ? $object : $object->getCurrentPublication();
@@ -478,6 +511,18 @@ class PubmedCentralExportPlugin extends PubObjectsExportPlugin implements HasTas
             $pdfFilesFound++;
         }
 
+        // @todo High-resolution media files are not packaged. PMC requires every file
+        // in a package to be referenced from the XML, and nothing references them
+        // today: generated JATS contains no <graphic> elements for them, and uploaded
+        // JATS references the depositor's own filenames. Reinstating this needs, at a
+        // minimum: a per-file component in the packaged name (buildFileName() is
+        // derived from the publication, so every media file would otherwise collide
+        // and ZipArchive would silently keep only the last), a flat
+        // [sourceName => packagedName] map, rewriting //graphic/@xlink:href in
+        // modifyCustomJats(), and reporting the unused
+        // plugins.importexport.pmc.export.failure.missingMediaFile error when the XML
+        // references a file that was not uploaded.
+
         // Add article XML to the zip
         $document = $this->exportXML($object, null, $context, $noValidation, $exportErrors, $articlePdfFilename, $genres, $nlmTitle);
         if (is_array($document)) {
@@ -501,10 +546,20 @@ class PubmedCentralExportPlugin extends PubObjectsExportPlugin implements HasTas
     /**
      * Create a zip file of collected objects for download.
      *
+     * A single object is downloaded as its own package. Only several objects are
+     * gathered into a collection, because PMC takes one article per zip.
+     *
      * @return array the path of the created zip file or error details, if applicable.
      */
     private function createZipCollection(array $objects, Context $context, ?bool $noValidation = null): array
     {
+        if (count($objects) === 1) {
+            $zipPackage = $this->createZip(reset($objects), $context, $noValidation);
+            return empty($zipPackage['path'])
+                ? ['error' => $zipPackage['error']]
+                : ['path' => $zipPackage['path']];
+        }
+
         $finalZipPath = tempnam(sys_get_temp_dir(), 'PubmedCentralExport_');
         $finalZip = new ZipArchive();
         // OVERWRITE avoids the "Using empty file as ZipArchive" deprecation that is
@@ -701,10 +756,16 @@ class PubmedCentralExportPlugin extends PubObjectsExportPlugin implements HasTas
 
     /**
      * Modify the JATS XML to meet PMC requirements.
+     *
+     * @todo High-resolution media files are not supported for system-generated JATS.
+     * The generated document contains no <graphic> elements to point at them, and
+     * there is no way to determine where in the body each image belongs. Only
+     * uploaded JATS carries its own <graphic> elements -- see modifyCustomJats() and
+     * the note in createZip(). Revisit if generated JATS gains figure support.
      */
     protected function modifyDefaultJats(
         string $importedJats,
-        ?string $articlePdfFilename,
+        string $articlePdfFilename,
         string $nlmTitle
     ): string|array {
         $dom = new DOMDocument();
@@ -762,12 +823,10 @@ class PubmedCentralExportPlugin extends PubObjectsExportPlugin implements HasTas
             return ['plugins.importexport.pmc.export.failure.jatsNodeMissing', 'article-meta'];
         }
 
-        // change pub-date publication-format from epub to electronic
-        $pubDateNode = $xpath->query("pub-date[@publication-format='epub']", $articleMetaNode)->item(0);
-        $pubDateNode?->setAttribute('publication-format', 'electronic');
-
+        // The style check only accepts author or editor, so drop every other contributor
+        // type the contributor roles can produce (translator, reviewer, reader, other...).
         $articleContribNodes = $xpath->query(
-            "contrib-group/contrib[not(@contrib-type='author' or contrib-type='editor')]",
+            "contrib-group/contrib[not(@contrib-type='author' or @contrib-type='editor')]",
             $articleMetaNode
         );
         foreach ($articleContribNodes as $node) { /** @var DOMNode $node **/
@@ -779,36 +838,38 @@ class PubmedCentralExportPlugin extends PubObjectsExportPlugin implements HasTas
             $node->parentNode->removeChild($node);
         }
 
-        // move name out of name-alternatives if only one name is present for a contrib
-        // as name-alternatives must contain more than 1 child element for PMC
-        // and remove string-name due to PMC errors
-        $nameAlternativesNodes = $xpath->query("contrib-group/contrib/name-alternatives", $articleMetaNode);
-        foreach ($nameAlternativesNodes as $node) { /** @var DOMNode $node **/
-            $stringNameNode = $xpath->query('./string-name', $node);
-            if ($stringNameNode->length === 1) {
-                $node->removeChild($stringNameNode->item(0));
+        // The jatsTemplate plugin wraps every personal name in name-alternatives, holding the
+        // structured <name> and, where one is recorded, a display <string-name>. PMC rejects
+        // string-name, and name-alternatives needs more than one child, so drop the display
+        // name and unwrap the structured one. @specific-use only distinguished the two, so it
+        // goes with the wrapper. Queried document-wide to cover contributors in sub-article
+        // front-stubs as well as article-meta.
+        foreach ($xpath->query('//contrib-group/contrib/name-alternatives') as $node) { /** @var DOMNode $node **/
+            foreach ($xpath->query('./string-name', $node) as $stringNameNode) {
+                $node->removeChild($stringNameNode);
             }
             $names = $xpath->query('./name', $node);
-            if ($names->length > 1) {
+            if ($names->length !== 1) {
                 continue;
             }
-            if ($names->length === 1) {
-                $stringName = $xpath->query('./string-name', $node);
-                if ($stringName->length === 1) {
-                    $stringNameNode = $stringName->item(0);
-                    $stringNameNode->setAttribute('name-style', 'western');
-                    $node->parentNode->insertBefore($stringNameNode, $node);
-                }
-
-                $nameNode = $names->item(0);
-                // Move the name node before the name-alternatives node
-                $node->parentNode->insertBefore($nameNode, $node);
-                // Remove the now-redundant name-alternatives node
-                $node->parentNode->removeChild($node);
-            }
+            $nameNode = $names->item(0); /** @var DOMElement $nameNode */
+            $nameNode->removeAttribute('specific-use');
+            $node->parentNode->insertBefore($nameNode, $node);
+            $node->parentNode->removeChild($node);
         }
 
-        // Remove any existing self-uri PDF links
+        // The jatsTemplate plugin points supplementary-material at the galley's OJS download
+        // URL, but createZip() packages only the article PDF. PMC requires the target to be a
+        // packaged file, and the style check rejects an @xlink:href with no file extension
+        // outright, so drop these rather than ship a reference that cannot resolve.
+        // @todo Point these at packaged files once supplementary files are packaged -- see
+        // the note in createZip().
+        foreach ($xpath->query('//supplementary-material') as $node) { /** @var DOMNode $node **/
+            $node->parentNode->removeChild($node);
+        }
+
+        // Replace any self-uri PDF links with one pointing at the PDF packaged
+        // alongside this XML. createZip() cannot produce a package without one.
         $selfUriPdfNodes = $xpath->query(
             "self-uri[@content-type='pdf' or @content-type='application/pdf']",
             $articleMetaNode
@@ -817,18 +878,24 @@ class PubmedCentralExportPlugin extends PubObjectsExportPlugin implements HasTas
             $selfUriPdfNode->parentNode->removeChild($selfUriPdfNode);
         }
 
-        if ($articlePdfFilename) {
-            $linkElement = $dom->createElement('self-uri');
-            $linkElement->setAttribute('content-type', 'pdf');
-            $linkElement->setAttribute('xlink:href', $articlePdfFilename);
-            $uriNode = $xpath->query("self-uri", $articleMetaNode)->item(0);
-            if ($uriNode) {
-                $uriNode->parentNode->insertBefore($linkElement, $uriNode);
-            } else {
-                if (!$abstractNode = $xpath->query("abstract", $articleMetaNode)->item(0)) {
-                    return ['plugins.importexport.pmc.export.failure.jatsNodeMissing', 'abstract'];
-                }
-                $articleMetaNode->insertBefore($linkElement, $abstractNode);
+        $linkElement = $dom->createElement('self-uri');
+        $linkElement->setAttribute('content-type', 'pdf');
+        $linkElement->setAttribute('xlink:href', $articlePdfFilename);
+        $uriNode = $xpath->query("self-uri", $articleMetaNode)->item(0);
+        if ($uriNode) {
+            $uriNode->parentNode->insertBefore($linkElement, $uriNode);
+        } else {
+            if (!$abstractNode = $xpath->query("abstract", $articleMetaNode)->item(0)) {
+                return ['plugins.importexport.pmc.export.failure.jatsNodeMissing', 'abstract'];
+            }
+            $articleMetaNode->insertBefore($linkElement, $abstractNode);
+        }
+
+        // PMC accepts a narrower related-article-type vocabulary than JATS, so map the
+        // values it rejects onto its nearest supported ones.
+        foreach (self::PMC_RELATED_ARTICLE_TYPES as $jatsType => $pmcType) {
+            foreach ($xpath->query("//related-article[@related-article-type='{$jatsType}']") as $node) {
+                $node->setAttribute('related-article-type', $pmcType);
             }
         }
 
@@ -848,10 +915,15 @@ class PubmedCentralExportPlugin extends PubObjectsExportPlugin implements HasTas
 
     /**
      * Modify an uploaded JATS document to meet PMC requirements.
+     *
+     * @todo Uploaded JATS may reference figures via <graphic xlink:href="...">, but
+     * the referenced files are not packaged -- see the note in createZip(). Once
+     * media packaging is reinstated, those hrefs need remapping to the packaged
+     * filenames here.
      */
     protected function modifyCustomJats(
         string $importedJats,
-        ?string $articlePdfFilename
+        string $articlePdfFilename
     ): string|array {
         $dom = new DOMDocument();
         $dom->preserveWhiteSpace = false;
@@ -866,7 +938,8 @@ class PubmedCentralExportPlugin extends PubObjectsExportPlugin implements HasTas
             return ['plugins.importexport.pmc.export.failure.jatsNodeMissing', 'article-meta'];
         }
 
-        // Remove any existing self-uri PDF links
+        // Replace any self-uri PDF links with one pointing at the PDF packaged
+        // alongside this XML. createZip() cannot produce a package without one.
         $selfUriPdfNodes = $xpath->query(
             "self-uri[@content-type='pdf' or @content-type='application/pdf']",
             $articleMetaNode
@@ -875,19 +948,17 @@ class PubmedCentralExportPlugin extends PubObjectsExportPlugin implements HasTas
             $selfUriPdfNode->parentNode->removeChild($selfUriPdfNode);
         }
 
-        if ($articlePdfFilename) {
-            $linkElement = $dom->createElement('self-uri');
-            $linkElement->setAttribute('content-type', 'pdf');
-            $linkElement->setAttribute('xlink:href', $articlePdfFilename);
-            $uriNode = $xpath->query("self-uri", $articleMetaNode)->item(0);
-            if ($uriNode) {
-                $uriNode->parentNode->insertBefore($linkElement, $uriNode);
-            } else {
-                if (!$abstractNode = $xpath->query("abstract", $articleMetaNode)->item(0)) {
-                    return ['plugins.importexport.pmc.export.failure.jatsNodeMissing', 'abstract'];
-                }
-                $articleMetaNode->insertBefore($linkElement, $abstractNode);
+        $linkElement = $dom->createElement('self-uri');
+        $linkElement->setAttribute('content-type', 'pdf');
+        $linkElement->setAttribute('xlink:href', $articlePdfFilename);
+        $uriNode = $xpath->query("self-uri", $articleMetaNode)->item(0);
+        if ($uriNode) {
+            $uriNode->parentNode->insertBefore($linkElement, $uriNode);
+        } else {
+            if (!$abstractNode = $xpath->query("abstract", $articleMetaNode)->item(0)) {
+                return ['plugins.importexport.pmc.export.failure.jatsNodeMissing', 'abstract'];
             }
+            $articleMetaNode->insertBefore($linkElement, $abstractNode);
         }
 
         // Remove any empty p tags, e.g. from line breaks
@@ -899,6 +970,66 @@ class PubmedCentralExportPlugin extends PubObjectsExportPlugin implements HasTas
     }
 
     /**
+     * Resolve the JATS 1.2 publishing DTD, and the modules it includes, to the copy
+     * bundled with the application, so that validation does not depend on a request to
+     * jats.nlm.nih.gov. Any other document type is fetched as before.
+     */
+    protected function resolveJatsEntity(?string $publicId, string $systemId, array $context): mixed
+    {
+        return $this->isBundledJatsIdentifier($publicId, $systemId)
+            ? Core::getBaseDir() . self::JATS_12_DTD_PATH
+            : $systemId;
+    }
+
+    /**
+     * Whether a document declares the JATS version bundled with the application, and can
+     * therefore be validated against it. Generated JATS always does; uploaded JATS may
+     * declare another version, or no document type at all.
+     */
+    protected function isBundledJatsVersion(DOMDocument $importedJats): bool
+    {
+        $doctype = $importedJats->doctype;
+
+        return $doctype !== null && $this->isBundledJatsIdentifier($doctype->publicId, $doctype->systemId);
+    }
+
+    /**
+     * Whether a public or system identifier names the JATS DTD bundled with the application.
+     */
+    protected function isBundledJatsIdentifier(?string $publicId, ?string $systemId): bool
+    {
+        return $publicId === self::JATS_12_PUBLIC_ID
+            || ($systemId !== null && str_replace('https://', 'http://', $systemId) === self::JATS_12_SYSTEM_ID);
+    }
+
+    /**
+     * Record a condition that should be reported to the user without stopping the export.
+     */
+    protected function addValidationWarning(string $messageKey): void
+    {
+        $this->validationWarnings[$messageKey] = true;
+    }
+
+    /**
+     * @return string[] Message keys collected so far.
+     */
+    protected function getValidationWarnings(): array
+    {
+        return array_keys($this->validationWarnings);
+    }
+
+    /**
+     * Report everything collected during an export, then clear it.
+     */
+    protected function sendValidationWarnings($request): void
+    {
+        foreach ($this->getValidationWarnings() as $messageKey) {
+            $this->_sendNotification($request->getUser(), $messageKey, Notification::NOTIFICATION_TYPE_WARNING);
+        }
+        $this->validationWarnings = [];
+    }
+
+    /**
      * Validate a JATS XML document against the DTD and the NLM style checker XSL.
      *
      * @return true|string true if valid, or an error message.
@@ -907,15 +1038,28 @@ class PubmedCentralExportPlugin extends PubObjectsExportPlugin implements HasTas
     {
         libxml_use_internal_errors(true);
 
-        // DTD Validation
-        if (!$importedJats->validate()) {
-            $errors = libxml_get_errors();
-            $validationErrors = [];
-            foreach ($errors as $error) {
-                $validationErrors[] = "DTD Error [line $error->line]: " . trim($error->message);
+        // DTD validation, against the bundled DTD rather than jats.nlm.nih.gov. Only that
+        // one version is available, so a document declaring any other is reported to the
+        // user and left to the style check alone.
+        if (!$this->isBundledJatsVersion($importedJats)) {
+            $this->addValidationWarning('plugins.importexport.pmc.export.warning.jatsVersionUnsupported');
+        } else {
+            libxml_set_external_entity_loader($this->resolveJatsEntity(...));
+            try {
+                $isValid = $importedJats->validate();
+            } finally {
+                libxml_set_external_entity_loader(null);
             }
-            libxml_clear_errors();
-            return implode(PHP_EOL, $validationErrors);
+
+            if (!$isValid) {
+                $errors = libxml_get_errors();
+                $validationErrors = [];
+                foreach ($errors as $error) {
+                    $validationErrors[] = "DTD Error [line $error->line]: " . trim($error->message);
+                }
+                libxml_clear_errors();
+                return implode(PHP_EOL, $validationErrors);
+            }
         }
 
         // NLM style checker
@@ -944,9 +1088,11 @@ class PubmedCentralExportPlugin extends PubObjectsExportPlugin implements HasTas
             $styleCheckErrors[] = 'PMC Style Check Error: ' . $error->textContent;
         }
 
+        // @todo Remove before release. Style check warnings are logged for development
+        // purposes only; they do not block an export and are invisible to users. Decide
+        // whether to surface them (as errors, or behind a setting) instead of logging.
         $warnings = $filteredXml->getElementsByTagName('warning');
         foreach ($warnings as $warning) {
-            // @todo decide how to handle warnings - add to errors or continue? Or add validation setting for users?
             error_log('PMC Style Warning: ' . $warning->textContent);
         }
         return !empty($styleCheckErrors) ? implode(PHP_EOL, $styleCheckErrors) : true;
