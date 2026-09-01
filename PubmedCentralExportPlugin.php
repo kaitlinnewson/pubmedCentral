@@ -63,6 +63,42 @@ class PubmedCentralExportPlugin extends PubObjectsExportPlugin implements HasTas
     ];
 
     /**
+     * The characters PMC's style checker collapses before deciding whether an element is
+     * empty. XPath's own normalize-space() covers only space, tab, CR and LF, so a paragraph
+     * holding nothing but a non-breaking space reads as empty to PMC and as content here.
+     *
+     * @see xsl/stylecheck-named-tests.xsl, the really-normalize-space template
+     */
+    protected const PMC_SPACE_CHARACTERS = "\u{0020}\u{00A0}\u{1361}\u{1680}"
+        . "\u{2002}\u{2003}\u{2004}\u{2005}\u{2006}\u{2007}"
+        . "\u{2008}\u{2009}\u{200A}\u{200B}\u{202F}\u{205F}"
+        . "\u{2420}\u{3000}\u{303F}\u{FEFF}";
+
+    /**
+     * The journal-id-type values the PMC style checker accepts. OJS records its own journal
+     * identifiers, and an uploaded document may carry identifiers from wherever it was
+     * produced; PMC can resolve neither, and rejects the deposit over them.
+     *
+     * @see xsl/stylecheck-named-tests.xsl, the journal-id-check template
+     */
+    protected const PMC_JOURNAL_ID_TYPES = [
+        'archive',
+        'aggregator',
+        'coden',
+        'doi',
+        'hwp',
+        'index',
+        'iso-abbrev',
+        'issn',
+        'nlm-journal-id',
+        'nlm-ta',
+        'pmc',
+        'pubmed-jr-id',
+        'publisher-id',
+        'sc',
+    ];
+
+    /**
      * Message keys for conditions that do not stop an export but should still be
      * reported, collected across every object in the export and de-duplicated.
      */
@@ -91,11 +127,20 @@ class PubmedCentralExportPlugin extends PubObjectsExportPlugin implements HasTas
     /**
      * Create a filename for files created in the plugin, removing any invalid characters.
      * The naming scheme is determined by the journal's "namingType" setting:
-     *  - volumeIssue: nlmTitle-volume-issue-firstPage(-timestamp)
-     *  - articleNumber: nlmTitle-collectionYear-articleNumber(-timestamp)
+     *  - volumeIssue: nlmTitle-volume-issue-firstPage(.vVersion)(-timestamp)
+     *  - articleNumber: nlmTitle-collectionYear-articleNumber(.vVersion)(-timestamp)
      *
      * PMC organizes its archive by volume, so where a journal publishes by article
-     * number and carries no volumes, the collection year takes the volume's place.
+     * number and carries no volumes, the collection year takes the volume's place. The
+     * article number or first page is PMC's "uid", the last part before any timestamp.
+     *
+     * The version identifies which version of an article a package holds, and separates
+     * one version's files from another's: every name here is derived from the publication,
+     * so without it two versions of the same article produce the same package name and the
+     * same names inside it. It sits inside the uid rather than beside it, because PMC reads
+     * the uid as a single part. A publication carrying no version number is named as before.
+     *
+     * @see https://pmc.ncbi.nlm.nih.gov/pub/filespec-delivery/
      *
      * @param bool $ts Whether to include a timestamp in the filename.
      * @param string|null $fileExtension The optional file extension to include in the filename.
@@ -114,22 +159,30 @@ class PubmedCentralExportPlugin extends PubObjectsExportPlugin implements HasTas
             $namingType = $this->getSetting($context->getId(), 'namingType') ?: 'volumeIssue';
             if ($namingType === 'articleNumber') {
                 $parts[] = $this->collectionYear($object);
-                $parts[] = $publication->getData('articleNumber');
+                $uid = (string) $publication->getData('articleNumber');
             } else {
                 $issue = Repo::issue()->get($publication->getIssueId());
                 $parts[] = $issue->getVolume();
                 $parts[] = $issue->getNumber();
-                $parts[] = $publication->getStartingPage();
+                $uid = (string) $publication->getStartingPage();
             }
+
+            // PMC reads the uid as a single part of the name (jour-vol-uid-timestamp), so an
+            // article's version belongs inside it rather than beside it: "82.v2", not "82-v2".
+            if ($uid !== '' && ($version = $publication->getData('versionMajor'))) {
+                $uid .= '.v' . $version;
+            }
+            $parts[] = $uid;
         }
 
         if ($ts) {
             $parts[] = date('YmdHis');
         }
 
-        // PMC file names cannot contain spaces or special characters (such as ?, %, #, /, or :)
+        // PMC file names cannot contain spaces or special characters (such as ?, %, #, /, or :).
+        // A dot is not among them, and PMC's own example uids carry one (e.g. "bt.12345").
         $parts = array_map(
-            fn ($part) => preg_replace('/[^a-zA-Z0-9]/', '', (string) $part),
+            fn ($part) => trim(preg_replace('/[^a-zA-Z0-9.]/', '', (string) $part), '.'),
             $parts
         );
 
@@ -501,8 +554,6 @@ class PubmedCentralExportPlugin extends PubObjectsExportPlugin implements HasTas
             return ['error' => $error];
         }
 
-        $filename = $this->buildFileName($nlmTitle, $context, $object);
-
         // Add a PDF article galley file
         $pdfFilesFound = 0;
         $articlePdfFilename = null;
@@ -539,7 +590,7 @@ class PubmedCentralExportPlugin extends PubObjectsExportPlugin implements HasTas
             $galleyPath = $fileService->get($galleyFile->getData('fileId'))->path;
             $extension = pathinfo($galleyPath, PATHINFO_EXTENSION);
             $galleyFilename = $this->buildFileName($nlmTitle, $context, $object, false, $extension);
-            $galleyFilePath = $filename . '/' . $galleyFilename;
+            $galleyFilePath = $galleyFilename;
             $articlePdfFilename = $galleyFilename;
 
             if ($pdfFilesFound > 0) {
@@ -591,7 +642,7 @@ class PubmedCentralExportPlugin extends PubObjectsExportPlugin implements HasTas
         if (is_array($document)) {
             return $this->discardZip($zip, $zipPath, $document);
         } else {
-            $articlePathName = $filename . '/' . $this->buildFileName($nlmTitle, $context, $object, false, 'xml');
+            $articlePathName = $this->buildFileName($nlmTitle, $context, $object, false, 'xml');
             if (!$zip->addFromString($articlePathName, $document)) {
                 return $this->discardZip(
                     $zip,
@@ -859,13 +910,7 @@ class PubmedCentralExportPlugin extends PubObjectsExportPlugin implements HasTas
             return ['plugins.importexport.pmc.export.failure.jatsNodeMissing', 'journal-meta[1]'];
         }
         $journalMetaNode->insertBefore($journalIdNode, $journalMetaChildElement);
-        $journalIdNodes = $xpath->query(
-            "journal-id[@journal-id-type='ojs' or @journal-id-type='publisher']",
-            $journalMetaNode
-        );
-        foreach ($journalIdNodes as $node) { /** @var DOMNode $node **/
-            $node->parentNode->removeChild($node);
-        }
+        $this->removeUnsupportedJournalIds($xpath);
 
         // Add NLM title as the abbreviated journal title
         $nlmJournalTitleNode = $dom->createElement('abbrev-journal-title');
@@ -989,10 +1034,7 @@ class PubmedCentralExportPlugin extends PubObjectsExportPlugin implements HasTas
             }
         }
 
-        // Remove any empty <p> tags, e.g. from line breaks
-        foreach ($xpath->query('//p[not(*) and not(normalize-space())]') as $node) {
-            $node->parentNode->removeChild($node);
-        }
+        $this->removeEmptyParagraphs($xpath);
 
         // Add the article-type to the article element
         $articleNode = $dom->documentElement;
@@ -1024,6 +1066,8 @@ class PubmedCentralExportPlugin extends PubObjectsExportPlugin implements HasTas
 
         $xpath = new DOMXPath($dom);
 
+        $this->removeUnsupportedJournalIds($xpath);
+
         if (!$articleMetaNode = $xpath->query("//article/front/article-meta")->item(0)) {
             return ['plugins.importexport.pmc.export.failure.jatsNodeMissing', 'article-meta'];
         }
@@ -1051,12 +1095,50 @@ class PubmedCentralExportPlugin extends PubObjectsExportPlugin implements HasTas
             $articleMetaNode->insertBefore($linkElement, $abstractNode);
         }
 
-        // Remove any empty p tags, e.g. from line breaks
-        foreach ($xpath->query('//p[not(*) and not(normalize-space())]') as $node) {
-            $node->parentNode->removeChild($node);
-        }
+        $this->removeEmptyParagraphs($xpath);
 
         return $dom->saveXML();
+    }
+
+    /**
+     * Remove every paragraph PMC would read as empty, such as the ones a rich-text editor
+     * leaves behind for a line break.
+     *
+     * A paragraph holding a child element is content to PMC whatever its text, so only a
+     * childless one is a candidate, and its text is measured the way PMC measures it.
+     */
+    protected function removeEmptyParagraphs(DOMXPath $xpath): void
+    {
+        $spaces = self::PMC_SPACE_CHARACTERS;
+        $blanks = str_repeat(' ', mb_strlen($spaces));
+
+        $emptyNodes = $xpath->query(
+            "//p[not(*) and not(normalize-space(translate(., '{$spaces}', '{$blanks}')))]"
+        );
+        foreach ($emptyNodes as $node) { /** @var DOMNode $node */
+            $node->parentNode->removeChild($node);
+        }
+    }
+
+    /**
+     * Remove every journal-id whose type the PMC style checker does not accept, including
+     * one carrying no journal-id-type at all.
+     *
+     * The identifier names nothing PMC can resolve, so it is dropped rather than left to
+     * stop the deposit. Both the generated and the uploaded document are treated alike:
+     * an uploaded one is often OJS's own JATS, saved and edited.
+     */
+    protected function removeUnsupportedJournalIds(DOMXPath $xpath): void
+    {
+        $supported = implode(' or ', array_map(
+            fn (string $type) => "@journal-id-type='{$type}'",
+            self::PMC_JOURNAL_ID_TYPES
+        ));
+
+        foreach ($xpath->query("//article/front/journal-meta/journal-id[not({$supported})]") as $node) {
+            /** @var DOMNode $node */
+            $node->parentNode->removeChild($node);
+        }
     }
 
     /**

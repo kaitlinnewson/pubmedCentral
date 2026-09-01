@@ -355,6 +355,83 @@ class PubmedCentralExportPluginTest extends PKPTestCase
     }
 
     /**
+     * Every name is derived from the publication, so without the version two versions of an
+     * article would produce the same package name and the same names inside it. PMC reads the
+     * uid as one part of the name, so the version goes inside it: "e12345.v2", not "e12345-v2".
+     */
+    public function testBuildFileNameCarriesTheVersion(): void
+    {
+        $plugin = $this->createPlugin(['namingType' => 'articleNumber']);
+        $this->bindIssueRepository(12, 3, '2025-03-01');
+
+        $publication = new Publication();
+        $publication->setData('issueId', 7);
+        $publication->setData('articleNumber', 'e12345');
+        $publication->setData('versionMajor', 2);
+
+        $this->assertSame(
+            'jtest-2025-e12345.v2.xml',
+            $this->invoke($plugin, 'buildFileName', ['J Test', $this->createJournal(), $publication, false, 'xml'])
+        );
+    }
+
+    /**
+     * The version separates the volume/issue scheme's names for the same reason.
+     */
+    public function testBuildFileNameCarriesTheVersionUnderTheVolumeIssueScheme(): void
+    {
+        $plugin = $this->createPlugin(['namingType' => 'volumeIssue']);
+        $this->bindIssueRepository(12, 3);
+
+        $publication = new Publication();
+        $publication->setData('issueId', 7);
+        $publication->setData('pages', '45-52');
+        $publication->setData('versionMajor', 3);
+
+        $this->assertSame(
+            'jtest-12-3-45.v3.xml',
+            $this->invoke($plugin, 'buildFileName', ['J Test', $this->createJournal(), $publication, false, 'xml'])
+        );
+    }
+
+    /**
+     * The version sits before the timestamp, so a package name stays sortable by article.
+     */
+    public function testBuildFileNamePlacesTheVersionBeforeTheTimestamp(): void
+    {
+        $plugin = $this->createPlugin(['namingType' => 'articleNumber']);
+        $this->bindIssueRepository(12, 3, '2025-03-01');
+
+        $publication = new Publication();
+        $publication->setData('issueId', 7);
+        $publication->setData('articleNumber', 'e12345');
+        $publication->setData('versionMajor', 2);
+
+        $this->assertMatchesRegularExpression(
+            '/^jtest-2025-e12345\.v2-\d{14}\.zip$/',
+            $this->invoke($plugin, 'buildFileName', ['J Test', $this->createJournal(), $publication, true, 'zip'])
+        );
+    }
+
+    /**
+     * A publication carrying no version number is named the way it always was.
+     */
+    public function testBuildFileNameOmitsAnUnknownVersion(): void
+    {
+        $plugin = $this->createPlugin(['namingType' => 'articleNumber']);
+        $this->bindIssueRepository(12, 3, '2025-03-01');
+
+        $publication = new Publication();
+        $publication->setData('issueId', 7);
+        $publication->setData('articleNumber', 'e12345');
+
+        $this->assertSame(
+            'jtest-2025-e12345.xml',
+            $this->invoke($plugin, 'buildFileName', ['J Test', $this->createJournal(), $publication, false, 'xml'])
+        );
+    }
+
+    /**
      * A publication with no collection year is stopped by validateNamingMetadata()
      * before it is named, but the name itself should still not carry an empty part.
      */
@@ -420,6 +497,7 @@ class PubmedCentralExportPluginTest extends PKPTestCase
 
     /**
      * PMC file names cannot contain spaces or special characters such as ?, %, #, / or :.
+     * A dot is not one of them - PMC's own uids carry one - so it is kept.
      */
     public function testBuildFileNameStripsNonAlphanumericCharactersAndLowercases(): void
     {
@@ -428,7 +506,7 @@ class PubmedCentralExportPluginTest extends PKPTestCase
         $publication->setData('articleNumber', 'e 12/345');
 
         $this->assertSame(
-            'jpubknowledge1-e12345',
+            'j.pubknowledge1-e12345',
             $this->invoke(
                 $plugin,
                 'buildFileName',
@@ -1054,6 +1132,76 @@ class PubmedCentralExportPluginTest extends PKPTestCase
         // Only the abstract's non-empty paragraph should survive.
         $this->assertSame(1, $xpath->query('//p')->length);
         $this->assertSame('An abstract.', $xpath->query('//p')->item(0)->textContent);
+    }
+
+    /**
+     * A rich-text editor writes a blank line as a paragraph holding a non-breaking space.
+     * XPath's normalize-space() leaves that standing, but PMC counts it as empty and rejects
+     * the paragraph, so emptiness has to be measured the way PMC measures it.
+     */
+    #[DataProvider('jatsModifierProvider')]
+    public function testParagraphsHoldingOnlyNonBreakingSpaceAreRemoved(string $method): void
+    {
+        $jats = $this->jats("<p>\u{00A0}</p><p>\u{2003}\u{200B}</p><p>Real content.</p>");
+
+        $result = $this->modifyJats($method, $jats, 'jtest.pdf');
+
+        $xpath = $this->xpath($result);
+        $paragraphs = [];
+        foreach ($xpath->query('//p') as $paragraph) {
+            $paragraphs[] = $paragraph->textContent;
+        }
+
+        $this->assertSame(['Real content.', 'An abstract.'], $paragraphs);
+    }
+
+    /**
+     * A paragraph is content to PMC as soon as it holds a child element, whatever its text.
+     */
+    #[DataProvider('jatsModifierProvider')]
+    public function testParagraphsHoldingAnElementAreKept(string $method): void
+    {
+        $jats = $this->jats("<p>\u{00A0}<italic>x</italic></p>");
+
+        $result = $this->modifyJats($method, $jats, 'jtest.pdf');
+
+        $this->assertSame(1, $this->xpath($result)->query('//p/italic')->length);
+    }
+
+    /**
+     * The PMC style checker restricts journal-id-type to a fixed set of values, so an
+     * identifier carrying any other type - or none - stops the deposit. OJS records its own,
+     * and an uploaded document may carry identifiers from wherever it was produced.
+     */
+    #[DataProvider('jatsModifierProvider')]
+    public function testUnsupportedJournalIdsAreRemoved(string $method): void
+    {
+        $jats = str_replace(
+            '<journal-id journal-id-type="ojs">testjournal</journal-id>',
+            '<journal-id journal-id-type="ojs">testjournal</journal-id>'
+            . '<journal-id journal-id-type="publisher">Journal of Testing</journal-id>'
+            . '<journal-id>untyped</journal-id>'
+            . '<journal-id journal-id-type="publisher-id">jtest</journal-id>',
+            $this->jats()
+        );
+
+        $result = $this->modifyJats($method, $jats, 'jtest.pdf');
+
+        $this->assertIsString($result);
+        $xpath = $this->xpath($result);
+
+        $this->assertSame(
+            0,
+            $xpath->query(
+                "//journal-meta/journal-id[not(@journal-id-type)"
+                . " or @journal-id-type='ojs' or @journal-id-type='publisher']"
+            )->length,
+            'Journal identifiers PMC does not accept should have been removed'
+        );
+
+        $supported = $xpath->query("//journal-meta/journal-id[@journal-id-type='publisher-id']");
+        $this->assertSame(1, $supported->length, 'A supported journal-id should have been kept');
+        $this->assertSame('jtest', $supported->item(0)->textContent);
     }
 
     #[DataProvider('jatsModifierProvider')]
