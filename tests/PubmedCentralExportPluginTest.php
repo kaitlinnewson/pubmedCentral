@@ -1435,6 +1435,66 @@ class PubmedCentralExportPluginTest extends PKPTestCase
         );
     }
 
+    #[DataProvider('jatsModifierProvider')]
+    public function testPeerReviewRelatedObjectsAreRewrittenForPmc(string $method): void
+    {
+        $subArticles = <<<'XML'
+            <sub-article id="rr1" article-type="reviewer-report">
+                <front-stub>
+                    <related-object id="ro1" document-id="10.1234/test.1" document-id-type="doi"
+                        document-type="peer-reviewed-article"/>
+                </front-stub>
+            </sub-article>
+            <sub-article id="ar1" article-type="author-comment">
+                <front-stub>
+                    <related-object id="ro2" document-id="10.1234/test.r1" document-id-type="doi"
+                        document-type="reviewer-report"/>
+                </front-stub>
+            </sub-article>
+            XML;
+
+        $result = $this->modifyJats(
+            $method,
+            str_replace('</article>', $subArticles . '</article>', $this->jats()),
+            'jtest.pdf'
+        );
+
+        $this->assertIsString($result);
+        $xpath = $this->xpath($result);
+
+        $reviewedArticle = $xpath->query('//sub-article[@id="rr1"]/front-stub/related-object')->item(0);
+        $this->assertSame('article', $reviewedArticle->getAttribute('document-type'));
+        $this->assertSame('peer-reviewed-article', $reviewedArticle->getAttribute('link-type'));
+        $this->assertSame('10.1234/test.1', $reviewedArticle->getAttribute('document-id'), 'The target is kept');
+
+        $reviewerReport = $xpath->query('//sub-article[@id="ar1"]/front-stub/related-object')->item(0);
+        $this->assertSame('article', $reviewerReport->getAttribute('document-type'));
+        $this->assertSame('peer-review', $reviewerReport->getAttribute('link-type'));
+    }
+
+    #[DataProvider('jatsModifierProvider')]
+    public function testRelatedObjectsNamingOtherThingsAreLeftAlone(string $method): void
+    {
+        $subArticle = <<<'XML'
+            <sub-article id="rr1" article-type="reviewer-report">
+                <front-stub>
+                    <related-object id="ro1" document-id="10.1234/book" document-id-type="doi"
+                        document-type="chapter"/>
+                </front-stub>
+            </sub-article>
+            XML;
+
+        $result = $this->modifyJats(
+            $method,
+            str_replace('</article>', $subArticle . '</article>', $this->jats()),
+            'jtest.pdf'
+        );
+
+        $relatedObject = $this->xpath($result)->query('//related-object')->item(0);
+        $this->assertSame('chapter', $relatedObject->getAttribute('document-type'));
+        $this->assertFalse($relatedObject->hasAttribute('link-type'));
+    }
+
     public function testDefaultJatsUnwrapsNameAlternatives(): void
     {
         $contribGroup = <<<'XML'

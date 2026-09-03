@@ -63,6 +63,26 @@ class PubmedCentralExportPlugin extends PubObjectsExportPlugin implements HasTas
     ];
 
     /**
+     * The document-type values the JATS4R peer review recommendation puts on a
+     * related-object, mapped to the link-type PMC gives the same relationship. PMC
+     * reads a related-object that names a journal article only with
+     * document-type="article", and takes the relationship from link-type. Its style
+     * checker allows a narrower set of link-type values than related-article-type
+     * has: the reviewed article is "peer-reviewed-article" and a review is
+     * "peer-review", and there is no value for an editor's report or an author's
+     * comment, so those are left as they are.
+     *
+     * @see https://pmc.ncbi.nlm.nih.gov/tagging-guidelines/article/tags/#el-relobj
+     * @see https://pmc.ncbi.nlm.nih.gov/tagging-guidelines/article/dobs/#dob-peer-review
+     * @see xsl/stylecheck-named-tests.xsl, the related-object-check template
+     */
+    protected const PMC_RELATED_OBJECT_LINK_TYPES = [
+        'peer-reviewed-article' => 'peer-reviewed-article',
+        'peer-review-report' => 'peer-review',
+        'reviewer-report' => 'peer-review',
+    ];
+
+    /**
      * The characters PMC's style checker collapses before deciding whether an element is
      * empty. XPath's own normalize-space() covers only space, tab, CR and LF, so a paragraph
      * holding nothing but a non-breaking space reads as empty to PMC and as content here.
@@ -1038,6 +1058,7 @@ class PubmedCentralExportPlugin extends PubObjectsExportPlugin implements HasTas
             }
         }
 
+        $this->rewriteRelatedObjects($xpath);
         $this->removeEmptyParagraphs($xpath);
 
         // Add the article-type to the article element
@@ -1099,6 +1120,7 @@ class PubmedCentralExportPlugin extends PubObjectsExportPlugin implements HasTas
             $articleMetaNode->insertBefore($linkElement, $abstractNode);
         }
 
+        $this->rewriteRelatedObjects($xpath);
         $this->removeEmptyParagraphs($xpath);
 
         return $dom->saveXML();
@@ -1145,6 +1167,26 @@ class PubmedCentralExportPlugin extends PubObjectsExportPlugin implements HasTas
         }
     }
 
+    /**
+     * Rewrite the related-object elements that link peer review sub-articles to the
+     * article into the form PMC reads.
+     *
+     * The jatsTemplate plugin follows JATS4R, which names the kind of the target in
+     * document-type. PMC recognises a journal article only as document-type="article"
+     * and takes the relationship from link-type, so the kind moves across. Applied to
+     * uploaded JATS as well, which is often OJS's own document saved and edited; a
+     * related-object naming anything else is left alone.
+     */
+    protected function rewriteRelatedObjects(DOMXPath $xpath): void
+    {
+        foreach (self::PMC_RELATED_OBJECT_LINK_TYPES as $documentType => $linkType) {
+            foreach ($xpath->query("//related-object[@document-type='{$documentType}']") as $node) {
+                /** @var DOMElement $node */
+                $node->setAttribute('document-type', 'article');
+                $node->setAttribute('link-type', $linkType);
+            }
+        }
+    }
     /**
      * Resolve the JATS 1.2 publishing DTD, and the modules it includes, to the copy
      * bundled with the application, so that validation does not depend on a request to
