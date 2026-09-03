@@ -250,7 +250,7 @@ class PubmedCentralExportPluginTest extends PKPTestCase
     public function testDepositActionOfferedWhenCredentialsAreComplete(): void
     {
         $plugin = $this->createPlugin([
-            'host' => 'ftp.example.org',
+            'host' => 'sftp.example.org',
             'username' => 'user',
             'password' => 'secret',
         ]);
@@ -281,8 +281,8 @@ class PubmedCentralExportPluginTest extends PKPTestCase
         return [
             'nothing set' => [[]],
             'host missing' => [['username' => 'user', 'password' => 'secret']],
-            'username missing' => [['host' => 'ftp.example.org', 'password' => 'secret']],
-            'password missing' => [['host' => 'ftp.example.org', 'username' => 'user']],
+            'username missing' => [['host' => 'sftp.example.org', 'password' => 'secret']],
+            'password missing' => [['host' => 'sftp.example.org', 'username' => 'user']],
             'host empty' => [['host' => '', 'username' => 'user', 'password' => 'secret']],
         ];
     }
@@ -300,13 +300,13 @@ class PubmedCentralExportPluginTest extends PKPTestCase
 
     public static function accountProvider(): array
     {
-        $complete = ['host' => 'ftp.example.org', 'username' => 'user', 'password' => 'secret'];
+        $complete = ['host' => 'sftp.example.org', 'username' => 'user', 'password' => 'secret'];
 
         return [
             'complete' => [$complete, true],
             'nothing set' => [[], false],
             'blank strings' => [['host' => '', 'username' => '', 'password' => ''], false],
-            'host only' => [['host' => 'ftp.example.org'], false],
+            'host only' => [['host' => 'sftp.example.org'], false],
             'password missing' => [array_diff_key($complete, ['password' => null]), false],
         ];
     }

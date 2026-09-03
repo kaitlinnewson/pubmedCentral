@@ -27,8 +27,8 @@ use DOMNode;
 use DOMXPath;
 use Exception;
 use League\Flysystem\Filesystem;
-use League\Flysystem\Ftp\FtpAdapter;
-use League\Flysystem\Ftp\FtpConnectionOptions;
+use League\Flysystem\PhpseclibV3\SftpAdapter;
+use League\Flysystem\PhpseclibV3\SftpConnectionProvider;
 use PKP\context\Context;
 use PKP\core\Core;
 use PKP\core\JSONMessage;
@@ -112,7 +112,7 @@ class PubmedCentralExportPlugin extends PubObjectsExportPlugin implements HasTas
         parent::display($args, $request);
         $templateManager = TemplateManager::getManager();
         $templateManager->assign([
-            'ftpLibraryMissing' => !class_exists('\League\Flysystem\Ftp\FtpAdapter'),
+            'sftpLibraryMissing' => !class_exists('\League\Flysystem\PhpseclibV3\SftpAdapter'),
         ]);
 
         switch (array_shift($args)) {
@@ -442,7 +442,7 @@ class PubmedCentralExportPlugin extends PubObjectsExportPlugin implements HasTas
     }
 
     /**
-     * Whether the FTP account has everything required to deposit to it.
+     * Whether the SFTP account has everything required to deposit to it.
      */
     public function hasCompleteConnectionSettings(int $contextId): bool
     {
@@ -454,7 +454,7 @@ class PubmedCentralExportPlugin extends PubObjectsExportPlugin implements HasTas
     }
 
     /**
-     * Whether an FTP account (host/username/password) is fully filled in. The account
+     * Whether an SFTP account (host/username/password) is fully filled in. The account
      * is optional -- a journal may use the plugin for Export only and deliver packages
      * to PMC by hand -- but if any of the three is set, all three must be.
      */
@@ -494,20 +494,24 @@ class PubmedCentralExportPlugin extends PubObjectsExportPlugin implements HasTas
     }
 
     /**
-     * Write a package to the configured PMC FTP account.
+     * Write a package to the configured PMC SFTP account.
      *
      * @throws Exception If the package cannot be read, or the upload fails.
      */
     public function deliverToEndpoint(string $path, string $filename, Context $context): void
     {
         $settings = $this->getConnectionSettings($context);
-        $adapter = new FtpAdapter(FtpConnectionOptions::fromArray([
-            'host' => $settings['host'],
-            'port' => (int) $settings['port'] ?: 21,
-            'username' => $settings['username'],
-            'password' => $settings['password'],
-            'root' => $settings['path'],
-        ]));
+        $adapter = new SftpAdapter(
+            new SftpConnectionProvider(
+                $settings['host'],
+                $settings['username'],
+                $settings['password'],
+                null,
+                null,
+                (int) $settings['port'] ?: 22
+            ),
+            $settings['path'] ?: '/'
+        );
 
         $fp = fopen($path, 'r');
         if (!$fp) {

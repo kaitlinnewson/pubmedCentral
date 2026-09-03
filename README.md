@@ -23,7 +23,7 @@ Before using this plugin, your journal should be approved for deposit by PubMed 
 
 To use the plugin, ensure that your journal has entered a publisher and at least one ISSN in the journal settings.
 
-Within the plugin settings, you will need to enter the PubMed Central FTP connection details and your journal's
+Within the plugin settings, you will need to enter the PubMed Central SFTP connection details and your journal's
 NLM Title Abbreviation.
 
 Articles to export to PubMed Central should meet the following requirements:
@@ -72,11 +72,11 @@ If DOI versioning is enabled in OJS, then the user can deposit each major versio
 
 Deposits are queued: clicking Deposit (or the automatic deposit task running) dispatches one job per
 object, which builds that object's package, validates it, and uploads it. The request returns as soon
-as the jobs are queued, so a slow FTP endpoint never blocks the browser, and each object's outcome is
+as the jobs are queued, so a slow SFTP endpoint never blocks the browser, and each object's outcome is
 recorded against it individually. An object waiting on its job shows the Submitted status; when the
 job runs it becomes Deposited, or Failed with the error message.
 
-The FTP account is optional -- Export can be used to download packages and deliver them manually --
+The SFTP account is optional -- Export can be used to download packages and deliver them manually --
 but partially filling it in is not: either all of host, username, and password, or none. Automatic
 deposit requires a complete account. Deposit actions only appear once all three are set.
 

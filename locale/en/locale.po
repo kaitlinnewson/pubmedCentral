@@ -10,11 +10,11 @@ msgstr ""
 msgid "plugins.importexport.pmc.description.short"
 msgstr "Export journal articles to PubMed Central."
 
-msgid "plugins.importexport.pmc.ftpLibraryMissing"
+msgid "plugins.importexport.pmc.sftpLibraryMissing"
 msgstr ""
-"<blockquote style=\"border: 1px solid; padding: 1em;\"><strong>⚠️ Warning:</strong> The <code>league/flysystem-ftp</code> library is missing from your server. To install it, run:\n"
-"<pre><code>composer -d lib/pkp require league/flysystem-ftp</code></pre>"
-"...or upgrade to a newer release of OJS. Until this is resolved, <strong>FTP deposits will not work</strong>. SFTP deposits can still be used.</blockquote>"
+"<blockquote style=\"border: 1px solid; padding: 1em;\"><strong>⚠️ Warning:</strong> The <code>league/flysystem-sftp-v3</code> library is missing from your server. To install it, run:\n"
+"<pre><code>composer -d lib/pkp require league/flysystem-sftp-v3</code></pre>"
+"...or upgrade to a newer release of OJS. Until this is resolved, <strong>SFTP deposits will not work</strong>. Packages can still be downloaded and delivered manually.</blockquote>"
 
 msgid "plugins.importexport.pmc.missingFields"
 msgstr ""
@@ -34,7 +34,7 @@ msgid "plugins.importexport.pmc.path"
 msgstr "Path"
 
 msgid "plugins.importexport.pmc.port"
-msgstr "Port (optional, defaults to 21)"
+msgstr "Port (optional, defaults to 22)"
 
 msgid "plugins.importexport.pmc.endpoint"
 msgstr "Connection Details"
@@ -128,7 +128,7 @@ msgid "plugins.importexport.pmc.settings.form.accountIncomplete"
 msgstr "Please provide the host, username and password, or leave all three blank."
 
 msgid "plugins.importexport.pmc.settings.form.automaticRegistrationRequiresAccount"
-msgstr "Automatic deposit requires a complete FTP account: please provide the host, username and password."
+msgstr "Automatic deposit requires a complete SFTP account: please provide the host, username and password."
 
 msgid "plugins.importexport.pmc.settings.form.jatsImportedOnly"
 msgstr ""
