@@ -68,6 +68,22 @@ Uploaded JATS XML is not modified, so those files should carry their own collect
 
 If DOI versioning is enabled in OJS, then the user can deposit each major version of an article to PubMed Central.
 
+### Earlier Versions
+
+Only versions of record are listed for deposit. A published manuscript under review is sent to PubMed Central
+only once its version of record exists: when a version of record is deposited, any earlier published version of
+the same article that has not yet been deposited (a manuscript under review, or an earlier major version of the
+version of record) is deposited along with it, so PubMed Central receives the article's versions in order. Only
+the latest minor version of each stage and major version is sent, and versions already deposited or marked
+registered are left alone. This applies to deposits, both manual and automatic, and to Mark Registered, which
+also covers the earlier versions that would have accompanied the version of record; Export downloads just the
+selected objects. Author originals are never sent, being preprints rather than journal content.
+
+Each version is delivered separately, so a failed earlier version does not hold back the version of record. Since
+an earlier version has no row of its own, its failure is reported in the status of the version of record's row,
+for example "Deposited (earlier version failed)", as a link that opens the failure messages. Depositing the version of record again retries any earlier
+version that failed.
+
 ### Deposits
 
 Deposits are queued: clicking Deposit (or the automatic deposit task running) dispatches one job per

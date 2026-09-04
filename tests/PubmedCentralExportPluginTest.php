@@ -17,11 +17,15 @@ use APP\issue\Repository as IssueRepository;
 use APP\journal\Journal;
 use APP\plugins\generic\pubmedCentral\PubmedCentralExportPlugin;
 use APP\plugins\PubObjectsExportPlugin;
+use APP\publication\Collector as PublicationCollector;
+use APP\publication\enums\VersionStage;
 use APP\publication\Publication;
+use APP\publication\Repository as PublicationRepository;
 use APP\submission\Repository as SubmissionRepository;
 use APP\submission\Submission;
 use DOMDocument;
 use DOMXPath;
+use Illuminate\Support\LazyCollection;
 use PHPUnit\Framework\Attributes\CoversClass;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PKP\tests\PKPTestCase;
@@ -62,6 +66,7 @@ class PubmedCentralExportPluginTest extends PKPTestCase
         // Drop any container binding a test may have replaced so that the next
         // resolution builds a fresh instance.
         app()->forgetInstance(IssueRepository::class);
+        app()->forgetInstance(PublicationRepository::class);
         app()->forgetInstance(SubmissionRepository::class);
         parent::tearDown();
     }
@@ -1575,5 +1580,258 @@ class PubmedCentralExportPluginTest extends PKPTestCase
             ['plugins.importexport.pmc.export.failure.jatsNodeMissing', 'journal-meta'],
             $this->modifyJats('modifyDefaultJats', $jats, 'jtest.pdf')
         );
+    }
+
+    //
+    // includePreviousUnregisteredVersions() / findUnregisteredEarlierVersions()
+    //
+
+    /**
+     * Bind a publication repository whose collector hands back the given publications,
+     * in the order the collector would return them (by version).
+     */
+    private function bindPublicationRepository(array $publications): void
+    {
+        $collector = $this->createMock(PublicationCollector::class);
+        $collector->method('filterBySubmissionIds')->willReturnSelf();
+        $collector->method('filterByStatus')->willReturnSelf();
+        $collector->method('orderByVersion')->willReturnSelf();
+        $collector->method('getMany')->willReturn(LazyCollection::make($publications));
+
+        $publicationRepository = $this->createMock(PublicationRepository::class);
+        $publicationRepository->method('getCollector')->willReturn($collector);
+        app()->instance(PublicationRepository::class, $publicationRepository);
+    }
+
+    private function createVersion(int $id, string $stage, int $major, ?string $status = null, ?string $failedMsg = null): Publication
+    {
+        $publication = new Publication();
+        $publication->setId($id);
+        $publication->setData('submissionId', 7);
+        $publication->setData('status', Submission::STATUS_PUBLISHED);
+        $publication->setData('versionStage', $stage);
+        $publication->setData('versionMajor', $major);
+        $publication->setData('versionMinor', 0);
+        $publication->setData('pubmedCentral::status', $status);
+        $publication->setData('pubmedCentral_failedMsg', $failedMsg);
+        return $publication;
+    }
+
+    /**
+     * @return int[]
+     */
+    private function ids(array $objects): array
+    {
+        return array_map(fn ($object) => $object->getId(), $objects);
+    }
+
+    public function testEarlierVersionsAreDepositedAlongWithTheVersionOfRecord(): void
+    {
+        $vor = $this->createVersion(3, 'VoR', 2);
+        $this->bindPublicationRepository([
+            $this->createVersion(1, 'PMUR', 1),
+            $this->createVersion(2, 'VoR', 1),
+            $vor,
+        ]);
+
+        $result = $this->invoke($this->createPlugin(), 'includePreviousUnregisteredVersions', [[$vor]]);
+
+        $this->assertSame([3, 1, 2], $this->ids($result), 'The selected object comes first, then its earlier versions');
+    }
+
+    public function testAuthorOriginalsAreNeverIncluded(): void
+    {
+        $vor = $this->createVersion(3, 'VoR', 1);
+        $this->bindPublicationRepository([
+            $this->createVersion(1, 'AO', 1),
+            $this->createVersion(2, 'PMUR', 1),
+            $vor,
+        ]);
+
+        $result = $this->invoke($this->createPlugin(), 'findUnregisteredEarlierVersions', [$vor]);
+
+        $this->assertSame([2], $this->ids($result));
+    }
+
+    public function testOnlyTheLatestMinorOfEachStageAndMajorIsIncluded(): void
+    {
+        $vor = $this->createVersion(5, 'VoR', 1);
+        $this->bindPublicationRepository([
+            $this->createVersion(1, 'PMUR', 1),
+            $this->createVersion(2, 'PMUR', 1),
+            $this->createVersion(3, 'PMUR', 2),
+            $this->createVersion(4, 'PMUR', 2),
+            $vor,
+        ]);
+
+        $result = $this->invoke($this->createPlugin(), 'findUnregisteredEarlierVersions', [$vor]);
+
+        $this->assertSame([2, 4], $this->ids($result));
+    }
+
+    public function testVersionsAfterTheDepositedOneAreNotIncluded(): void
+    {
+        $firstVor = $this->createVersion(2, 'VoR', 1);
+        $this->bindPublicationRepository([
+            $this->createVersion(1, 'PMUR', 1),
+            $firstVor,
+            $this->createVersion(3, 'VoR', 2),
+        ]);
+
+        $result = $this->invoke($this->createPlugin(), 'findUnregisteredEarlierVersions', [$firstVor]);
+
+        $this->assertSame([1], $this->ids($result));
+    }
+
+    public function testAnEarlierMajorVersionOfRecordIsIncluded(): void
+    {
+        $secondVor = $this->createVersion(3, 'VoR', 2);
+        $this->bindPublicationRepository([
+            $this->createVersion(1, 'VoR', 1),
+            $this->createVersion(2, 'VoR', 1),
+            $secondVor,
+        ]);
+
+        $result = $this->invoke($this->createPlugin(), 'findUnregisteredEarlierVersions', [$secondVor]);
+
+        $this->assertSame([2], $this->ids($result), 'The latest minor of the earlier major');
+    }
+
+    #[DataProvider('registeredStatusProvider')]
+    public function testVersionsAlreadyRegisteredAreLeftAlone(string $status): void
+    {
+        $vor = $this->createVersion(3, 'VoR', 1);
+        $this->bindPublicationRepository([
+            $this->createVersion(1, 'PMUR', 1, $status),
+            $this->createVersion(2, 'PMUR', 2, PubObjectsExportPlugin::EXPORT_STATUS_ERROR),
+            $vor,
+        ]);
+
+        $result = $this->invoke($this->createPlugin(), 'findUnregisteredEarlierVersions', [$vor]);
+
+        $this->assertSame([2], $this->ids($result), 'A failed deposit is retried; a registered one is not');
+    }
+
+    public static function registeredStatusProvider(): array
+    {
+        return [
+            'deposited by the plugin' => [PubObjectsExportPlugin::EXPORT_STATUS_REGISTERED],
+            'marked registered' => [PubObjectsExportPlugin::EXPORT_STATUS_MARKEDREGISTERED],
+        ];
+    }
+
+    /**
+     * Every major version of record is listed, so two of the same article can be
+     * selected together; the earlier one must not be queued a second time as the
+     * later one's earlier version.
+     */
+    public function testAnEarlierVersionAlreadySelectedIsNotAddedTwice(): void
+    {
+        $firstVor = $this->createVersion(1, 'VoR', 1);
+        $secondVor = $this->createVersion(2, 'VoR', 2);
+        $this->bindPublicationRepository([$firstVor, $secondVor]);
+
+        $result = $this->invoke($this->createPlugin(), 'includePreviousUnregisteredVersions', [[$firstVor, $secondVor]]);
+
+        $this->assertSame([1, 2], $this->ids($result));
+    }
+
+    public function testMarkingRegisteredCoversTheEarlierVersions(): void
+    {
+        $vor = $this->createVersion(3, 'VoR', 1);
+        $this->bindPublicationRepository([
+            $this->createVersion(1, 'PMUR', 1),
+            $this->createVersion(2, 'PMUR', 2, PubObjectsExportPlugin::EXPORT_STATUS_REGISTERED),
+            $vor,
+        ]);
+
+        $plugin = $this->getMockBuilder(PubmedCentralExportPlugin::class)
+            ->disableOriginalConstructor()
+            ->onlyMethods(['getSetting', 'getPluginPath', 'updateStatus'])
+            ->getMock();
+        $plugin->method('getSetting')->willReturn(null);
+        $plugin->method('getPluginPath')->willReturn('plugins/generic/pubmedCentral');
+
+        $marked = [];
+        $plugin->method('updateStatus')->willReturnCallback(
+            function (Publication $publication, string $status) use (&$marked) {
+                $marked[$publication->getId()] = $status;
+            }
+        );
+
+        $plugin->markRegistered([$vor]);
+
+        $this->assertSame(
+            [
+                3 => PubObjectsExportPlugin::EXPORT_STATUS_MARKEDREGISTERED,
+                1 => PubObjectsExportPlugin::EXPORT_STATUS_MARKEDREGISTERED,
+            ],
+            $marked,
+            'The selected VoR and its unregistered earlier version are marked; the registered one is left alone'
+        );
+    }
+
+    public function testOnlyVersionsOfRecordAreListedForDeposit(): void
+    {
+        $this->assertSame([VersionStage::VERSION_OF_RECORD], $this->createPlugin()->getExportableVersionStages());
+    }
+
+    public function testFailedEarlierVersionsAreFound(): void
+    {
+        $vor = $this->createVersion(4, 'VoR', 2);
+        $this->bindPublicationRepository([
+            $this->createVersion(1, 'PMUR', 1, PubObjectsExportPlugin::EXPORT_STATUS_ERROR, 'Invalid JATS'),
+            $this->createVersion(2, 'VoR', 1, PubObjectsExportPlugin::EXPORT_STATUS_REGISTERED),
+            $this->createVersion(3, 'AO', 1, PubObjectsExportPlugin::EXPORT_STATUS_ERROR, 'Never sent'),
+            $vor,
+        ]);
+
+        $result = $this->invoke($this->createPlugin(), 'findFailedEarlierVersions', [$vor]);
+
+        $this->assertSame([1], $this->ids($result), 'Only earlier versions that accompany a VoR are reported');
+    }
+
+    public function testEarlierVersionFailuresNameTheVersion(): void
+    {
+        $vor = $this->createVersion(3, 'VoR', 1);
+        $this->bindPublicationRepository([
+            $this->createVersion(1, 'PMUR', 1, PubObjectsExportPlugin::EXPORT_STATUS_ERROR, 'Invalid JATS'),
+            $this->createVersion(2, 'PMUR', 2, PubObjectsExportPlugin::EXPORT_STATUS_REGISTERED),
+            $vor,
+        ]);
+
+        $result = $this->invoke($this->createPlugin(), 'describeEarlierVersionFailures', [$vor]);
+
+        // The plugin's locale file is not loaded here, so the key is compared
+        // through __() as the convertErrorMessage() tests do; the version label
+        // resolves, since it comes from the application's own locale
+        $this->assertSame(
+            [__('plugins.importexport.pmc.status.earlierVersionFailed.detail', [
+                'version' => 'Published Manuscript Under Review 1.0',
+                'message' => 'Invalid JATS',
+            ])],
+            $result
+        );
+    }
+
+    public function testNoEarlierVersionFailuresWhenAllSucceeded(): void
+    {
+        $vor = $this->createVersion(2, 'VoR', 1);
+        $this->bindPublicationRepository([
+            $this->createVersion(1, 'PMUR', 1, PubObjectsExportPlugin::EXPORT_STATUS_REGISTERED),
+            $vor,
+        ]);
+
+        $this->assertSame([], $this->invoke($this->createPlugin(), 'describeEarlierVersionFailures', [$vor]));
+    }
+
+    public function testSubmissionsArePassedThroughUntouched(): void
+    {
+        $submission = new Submission();
+        $submission->setId(9);
+
+        $result = $this->invoke($this->createPlugin(), 'includePreviousUnregisteredVersions', [[$submission]]);
+
+        $this->assertSame([$submission], $result);
     }
 }

@@ -8,16 +8,20 @@
  * Distributed under the GNU GPL v3. For full terms see the file LICENSE.
  *
  * @class PubmedCentralExportPlugin
+ *
  * @brief PubMed Central export plugin
  */
 
 namespace APP\plugins\generic\pubmedCentral;
 
+use APP\core\Application;
+use APP\core\Request;
 use APP\facades\Repo;
 use APP\notification\NotificationManager;
 use APP\plugins\generic\pubmedCentral\classes\form\PubmedCentralSettingsForm;
 use APP\plugins\generic\pubmedCentral\jobs\PubmedCentralDeliver;
 use APP\plugins\PubObjectsExportPlugin;
+use APP\publication\enums\VersionStage;
 use APP\publication\Publication;
 use APP\submission\Submission;
 use APP\template\TemplateManager;
@@ -247,6 +251,8 @@ class PubmedCentralExportPlugin extends PubObjectsExportPlugin implements HasTas
     /**
      * @copydoc PubObjectsExportPlugin::executeExportAction()
      *
+     * @param null|mixed $noValidation
+     *
      * @throws Exception
      */
     public function executeExportAction(
@@ -330,6 +336,10 @@ class PubmedCentralExportPlugin extends PubObjectsExportPlugin implements HasTas
 
     /**
      * Get the XML for selected objects.
+     *
+     * @param null|mixed $noValidation
+     * @param null|mixed $outputErrors
+     * @param null|mixed $genres
      *
      * @return array|string array of error message, or XML document.
      */
@@ -500,6 +510,8 @@ class PubmedCentralExportPlugin extends PubObjectsExportPlugin implements HasTas
             return ['plugins.importexport.pmc.export.failure.settings'];
         }
 
+        $objects = $this->includePreviousUnregisteredVersions($objects);
+
         foreach ($objects as $object) {
             dispatch(new PubmedCentralDeliver(
                 $object->getId(),
@@ -511,6 +523,216 @@ class PubmedCentralExportPlugin extends PubObjectsExportPlugin implements HasTas
         }
 
         return true;
+    }
+
+    /**
+     * Include any not-yet-registered earlier version of the same submission, so that
+     * a version of record is deposited, or marked registered, together with the
+     * manuscript under review that came before it.
+     *
+     * This is the only way an earlier version reaches PMC: only versions of record
+     * are listed for deposit, so a manuscript under review is sent once, and only
+     * once, its version of record exists.
+     *
+     * Submissions, which is what a journal without DOI versioning deposits, pass
+     * through untouched.
+     *
+     * @param Submission[]|Publication[] $objects
+     *
+     * @return Submission[]|Publication[]
+     */
+    protected function includePreviousUnregisteredVersions(array $objects): array
+    {
+        $expanded = $objects;
+        $includedIds = [];
+        foreach ($objects as $object) {
+            if ($object instanceof Publication) {
+                $includedIds[$object->getId()] = true;
+            }
+        }
+
+        foreach ($objects as $object) {
+            if (!$object instanceof Publication) {
+                continue;
+            }
+            foreach ($this->findUnregisteredEarlierVersions($object) as $earlierVersion) {
+                if (isset($includedIds[$earlierVersion->getId()])) {
+                    continue;
+                }
+                $expanded[] = $earlierVersion;
+                $includedIds[$earlierVersion->getId()] = true;
+            }
+        }
+
+        return $expanded;
+    }
+
+    /**
+     * Marking a version of record registered covers the earlier versions that would
+     * have accompanied it, so a later deposit does not send them again.
+     *
+     * @copydoc PubObjectsExportPlugin::markRegistered()
+     */
+    public function markRegistered($objects)
+    {
+        parent::markRegistered($this->includePreviousUnregisteredVersions($objects));
+    }
+
+    /**
+     * The version stages an earlier version may belong to and still accompany a
+     * version of record to PMC. Author originals are left out, being preprints
+     * rather than journal content.
+     *
+     * @return VersionStage[]
+     */
+    protected function getEarlierVersionStages(): array
+    {
+        return [VersionStage::PUBLISHED_MANUSCRIPT_UNDER_REVIEW, VersionStage::VERSION_OF_RECORD];
+    }
+
+    /**
+     * Find the latest published minor of every (stage, major) earlier than the given
+     * publication's own, for the same submission, in the stages that accompany it.
+     *
+     * @return Publication[]
+     */
+    protected function findEarlierVersions(Publication $publication): array
+    {
+        $publications = Repo::publication()->getCollector()
+            ->filterBySubmissionIds([$publication->getData('submissionId')])
+            ->filterByStatus([Publication::STATUS_PUBLISHED])
+            ->orderByVersion()
+            ->getMany();
+
+        $stages = array_map(fn (VersionStage $stage) => $stage->value, $this->getEarlierVersionStages());
+
+        $latestByStageMajor = [];
+        foreach ($publications as $earlierVersion) {
+            if ($earlierVersion->getId() === $publication->getId()) {
+                break;
+            }
+            if (!in_array($earlierVersion->getData('versionStage'), $stages, true)) {
+                continue;
+            }
+            $key = $earlierVersion->getData('versionStage') . '-' . $earlierVersion->getData('versionMajor');
+            $latestByStageMajor[$key] = $earlierVersion;
+        }
+
+        return array_values($latestByStageMajor);
+    }
+
+    /**
+     * The earlier versions of the given publication that haven't been registered yet.
+     *
+     * @return Publication[]
+     */
+    protected function findUnregisteredEarlierVersions(Publication $publication): array
+    {
+        // A version marked registered was deposited outside the plugin, so it is as
+        // done as one the plugin delivered itself
+        $registeredStatuses = [
+            PubObjectsExportPlugin::EXPORT_STATUS_REGISTERED,
+            PubObjectsExportPlugin::EXPORT_STATUS_MARKEDREGISTERED,
+        ];
+
+        return array_values(array_filter(
+            $this->findEarlierVersions($publication),
+            fn (Publication $earlierVersion) => !in_array(
+                $earlierVersion->getData($this->getDepositStatusSettingName()),
+                $registeredStatuses,
+                true
+            )
+        ));
+    }
+
+    /**
+     * The earlier versions of the given publication whose last deposit failed.
+     *
+     * @return Publication[]
+     */
+    protected function findFailedEarlierVersions(Publication $publication): array
+    {
+        return array_values(array_filter(
+            $this->findEarlierVersions($publication),
+            fn (Publication $earlierVersion) => $earlierVersion->getData($this->getDepositStatusSettingName()) === PubObjectsExportPlugin::EXPORT_STATUS_ERROR
+        ));
+    }
+
+    /**
+     * An earlier version has no row of its own, so a failed deposit of one is reported
+     * on the row of the version of record it accompanied: whatever that row's own
+     * status, it gets a link to the failure messages.
+     *
+     * @copydoc PubObjectsExportPlugin::getStatusActions()
+     */
+    public function getStatusActions(Submission|Publication $pubObject): array
+    {
+        $actions = parent::getStatusActions($pubObject);
+        if (!$pubObject instanceof Publication || !$this->findFailedEarlierVersions($pubObject)) {
+            return $actions;
+        }
+
+        $request = Application::get()->getRequest();
+        $action = new LinkAction(
+            'earlierVersionFailed',
+            new AjaxModal(
+                $request->getDispatcher()->url(
+                    $request,
+                    Application::ROUTE_COMPONENT,
+                    null,
+                    'grid.settings.plugins.settingsPluginGridHandler',
+                    'manage',
+                    null,
+                    ['plugin' => $this->getName(), 'category' => 'importexport', 'verb' => 'statusMessage', 'publicationId' => $pubObject->getId()]
+                ),
+                __('plugins.importexport.pmc.status.earlierVersionFailed'),
+                'failureMessage'
+            ),
+            __('plugins.importexport.pmc.status.earlierVersionFailed')
+        );
+
+        foreach (array_keys($this->getStatusNames()) as $status) {
+            if ($status !== '' && !isset($actions[$status])) {
+                $actions[$status] = $action;
+            }
+        }
+
+        return $actions;
+    }
+
+    /**
+     * @copydoc PubObjectsExportPlugin::getStatusMessage()
+     */
+    public function getStatusMessage(Request $request): ?string
+    {
+        $messages = [parent::getStatusMessage($request)];
+
+        $publicationId = (int) $request->getUserVar('publicationId');
+        $publication = $publicationId ? Repo::publication()->get($publicationId) : null;
+        if ($publication) {
+            $messages = array_merge($messages, $this->describeEarlierVersionFailures($publication));
+        }
+
+        $message = implode("\n\n", array_filter($messages));
+        return $message === '' ? null : $message;
+    }
+
+    /**
+     * One line per failed earlier version, naming the version and its failure.
+     *
+     * @return string[]
+     */
+    protected function describeEarlierVersionFailures(Publication $publication): array
+    {
+        $descriptions = [];
+        foreach ($this->findFailedEarlierVersions($publication) as $earlierVersion) {
+            $version = $earlierVersion->getVersion();
+            $descriptions[] = __('plugins.importexport.pmc.status.earlierVersionFailed.detail', [
+                'version' => $version ? (string) $version : $earlierVersion->getId(),
+                'message' => $earlierVersion->getData($this->getFailedMsgSettingName()),
+            ]);
+        }
+        return $descriptions;
     }
 
     /**
@@ -610,7 +832,6 @@ class PubmedCentralExportPlugin extends PubObjectsExportPlugin implements HasTas
                 continue;
             }
 
-            // @todo make sure files meet 2GB max size requirement?
             $galleyPath = $fileService->get($galleyFile->getData('fileId'))->path;
             $extension = pathinfo($galleyPath, PATHINFO_EXTENSION);
             $galleyFilename = $this->buildFileName($nlmTitle, $context, $object, false, $extension);
@@ -1169,13 +1390,9 @@ class PubmedCentralExportPlugin extends PubObjectsExportPlugin implements HasTas
 
     /**
      * Rewrite the related-object elements that link peer review sub-articles to the
-     * article into the form PMC reads.
+     * article into the form PMC requires.
      *
-     * The jatsTemplate plugin follows JATS4R, which names the kind of the target in
-     * document-type. PMC recognises a journal article only as document-type="article"
-     * and takes the relationship from link-type, so the kind moves across. Applied to
-     * uploaded JATS as well, which is often OJS's own document saved and edited; a
-     * related-object naming anything else is left alone.
+     * @see https://pmc.ncbi.nlm.nih.gov/tagging-guidelines/article/tags/#el-relobj
      */
     protected function rewriteRelatedObjects(DOMXPath $xpath): void
     {
@@ -1273,7 +1490,7 @@ class PubmedCentralExportPlugin extends PubObjectsExportPlugin implements HasTas
                 $errors = libxml_get_errors();
                 $validationErrors = [];
                 foreach ($errors as $error) {
-                    $validationErrors[] = "DTD Error [line $error->line]: " . trim($error->message);
+                    $validationErrors[] = "DTD Error [line {$error->line}]: " . trim($error->message);
                 }
                 libxml_clear_errors();
                 return implode(PHP_EOL, $validationErrors);
