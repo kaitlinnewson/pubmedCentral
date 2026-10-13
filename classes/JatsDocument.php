@@ -193,6 +193,7 @@ class JatsDocument
         }
 
         $this->removeUnsupportedJournalIds();
+        $this->removeJournalTitleTranslationsInArticleLanguage();
 
         if ($error = $this->addAbbreviatedJournalTitle($nlmTitle)) {
             return $error;
@@ -293,6 +294,25 @@ class JatsDocument
         ));
 
         $this->removeNodes("//article/front/journal-meta/journal-id[not({$supported})]");
+    }
+
+    /**
+     * Remove a translated journal title in the article's language, which PMC's style checker rejects.
+     *
+     * @see xsl/stylecheck-named-tests.xsl, the trans-title-check template
+     */
+    protected function removeJournalTitleTranslationsInArticleLanguage(): void
+    {
+        $articleLanguage = strtolower($this->dom->documentElement->getAttribute('xml:lang') ?: 'en');
+
+        $query = '//article/front/journal-meta/journal-title-group/trans-title-group';
+        foreach (iterator_to_array($this->xpath->query($query)) as $group) { /** @var DOMElement $group */
+            $language = $group->getAttribute('xml:lang')
+                ?: $this->xpath->evaluate('string(trans-title/@xml:lang)', $group);
+            if (strtolower($language) === $articleLanguage) {
+                $this->removeNode($group);
+            }
+        }
     }
 
     /**

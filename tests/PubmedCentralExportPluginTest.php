@@ -1237,6 +1237,43 @@ class PubmedCentralExportPluginTest extends PKPTestCase
     }
 
     /**
+     * PMC's style checker rejects a journal trans-title in the article's language, which a
+     * journal with a French primary locale and an English title produces for English articles.
+     */
+    #[DataProvider('journalTitleTranslationProvider')]
+    public function testJournalTitleTranslationInArticleLanguageIsRemoved(string $articleLanguage, array $expectedLanguages): void
+    {
+        $jats = str_replace(
+            ['<article xmlns:xlink="http://www.w3.org/1999/xlink">', '<journal-title>Journal of Testing</journal-title>'],
+            [
+                '<article xmlns:xlink="http://www.w3.org/1999/xlink"' . ($articleLanguage ? " xml:lang=\"{$articleLanguage}\"" : '') . '>',
+                '<journal-title xml:lang="fr-CA">Revue de test</journal-title>'
+                    . '<trans-title-group xml:lang="EN"><trans-title>Test Journal</trans-title></trans-title-group>'
+                    . '<trans-title-group xml:lang="es"><trans-title>Revista de prueba</trans-title></trans-title-group>',
+            ],
+            $this->jats()
+        );
+
+        $result = $this->prepareJats($jats, 'jtest.pdf');
+
+        $this->assertIsString($result);
+        $languages = [];
+        foreach ($this->xpath($result)->query('//journal-title-group/trans-title-group/@xml:lang') as $attribute) {
+            $languages[] = $attribute->value;
+        }
+        $this->assertSame($expectedLanguages, $languages);
+    }
+
+    public static function journalTitleTranslationProvider(): array
+    {
+        return [
+            'English article drops the English title' => ['en', ['es']],
+            'article language defaults to English' => ['', ['es']],
+            'French article keeps every translation' => ['fr-CA', ['EN', 'es']],
+        ];
+    }
+
+    /**
      * Removing an element from indented element content takes its indentation with it,
      * rather than leaving a blank line behind.
      */
