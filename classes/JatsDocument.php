@@ -241,9 +241,7 @@ class JatsDocument
     protected function open(): ?array
     {
         $this->packagedMedia = [];
-
         $this->dom = new DOMDocument();
-        $this->dom->preserveWhiteSpace = false;
 
         // loadXML() raises a ValueError rather than failing on an empty document
         if ($this->jats === '' || !$this->dom->loadXML($this->jats)) {
@@ -341,7 +339,7 @@ class JatsDocument
         );
         $orphanCandidates = $this->referencedIds($removed);
         foreach ($removed as $contrib) {
-            $contrib->parentNode->removeChild($contrib);
+            $this->removeNode($contrib);
         }
 
         $stillReferenced = $this->referencedIds([$this->dom->documentElement]);
@@ -349,7 +347,7 @@ class JatsDocument
         foreach ($this->xpath->query($ownedByContributors, $articleMeta) as $node) { /** @var DOMElement $node */
             $id = $node->getAttribute('id');
             if (isset($orphanCandidates[$id]) && !isset($stillReferenced[$id])) {
-                $node->parentNode->removeChild($node);
+                $this->removeNode($node);
             }
         }
 
@@ -402,7 +400,7 @@ class JatsDocument
             $nameNode = $names->item(0); /** @var DOMElement $nameNode */
             $nameNode->removeAttribute('specific-use');
             $node->parentNode->insertBefore($nameNode, $node);
-            $node->parentNode->removeChild($node);
+            $this->removeNode($node);
         }
     }
 
@@ -466,7 +464,7 @@ class JatsDocument
         foreach ($this->xpath->query('//supplementary-material') as $node) { /** @var DOMElement $node */
             $href = $node->getAttributeNS(self::XLINK_NS, 'href') ?: $node->getAttribute('xlink:href');
             if ($href !== '' && preg_match(self::EXTERNAL_REFERENCE, $href)) {
-                $node->parentNode->removeChild($node);
+                $this->removeNode($node);
             }
         }
     }
@@ -572,11 +570,11 @@ class JatsDocument
                             $xref
                         );
                         if ($siblings->length) {
-                            $xref->parentNode->removeChild($xref);
+                            $this->removeNode($xref);
                         }
                     }
                 }
-                $fn->parentNode->removeChild($fn);
+                $this->removeNode($fn);
             }
         }
     }
@@ -738,7 +736,25 @@ class JatsDocument
     protected function removeNodes(string $query, ?DOMNode $context = null): void
     {
         foreach ($this->xpath->query($query, $context) as $node) { /** @var DOMNode $node */
-            $node->parentNode->removeChild($node);
+            $this->removeNode($node);
         }
+    }
+
+    /**
+     * Remove a node, and its indentation when it sits on a line of its own in a parent with no text.
+     */
+    protected function removeNode(DOMNode $node): void
+    {
+        $parent = $node->parentNode;
+        $previous = $node->previousSibling;
+        $isBlank = fn (?DOMNode $sibling) => $sibling?->nodeType === XML_TEXT_NODE && trim($sibling->nodeValue) === '';
+        if (
+            $isBlank($previous)
+            && $isBlank($node->nextSibling)
+            && !$this->xpath->query('text()[normalize-space()]', $parent)->length
+        ) {
+            $parent->removeChild($previous);
+        }
+        $parent->removeChild($node);
     }
 }

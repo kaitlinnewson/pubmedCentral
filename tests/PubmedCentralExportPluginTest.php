@@ -1236,6 +1236,91 @@ class PubmedCentralExportPluginTest extends PKPTestCase
         );
     }
 
+    /**
+     * Removing an element from indented element content takes its indentation with it,
+     * rather than leaving a blank line behind.
+     */
+    public function testRemovalsLeaveNoBlankLines(): void
+    {
+        $jats = str_replace(
+            [
+                '</journal-title-group>',
+                '<pub-date publication-format="electronic" date-type="pub">',
+            ],
+            [
+                "</journal-title-group>\n"
+                    . "                    <contrib-group>\n"
+                    . "                        <contrib contrib-type=\"editor\"><name><surname>Editor</surname></name></contrib>\n"
+                    . '                    </contrib-group>',
+                "<author-notes>\n"
+                    . "                        <fn fn-type=\"coi-statement\" id=\"con-1\"><p>None.</p></fn>\n"
+                    . "                        <fn fn-type=\"coi-statement\" id=\"con-2\"><p>None.</p></fn>\n"
+                    . "                        <fn fn-type=\"coi-statement\" id=\"con-3\"><p>None.</p></fn>\n"
+                    . "                    </author-notes>\n"
+                    . '                    <pub-date publication-format="electronic" date-type="pub">',
+            ],
+            $this->jats()
+        );
+
+        $result = $this->prepareJats($jats, 'jtest.pdf');
+
+        $this->assertIsString($result);
+        $this->assertSame(0, $this->xpath($result)->query('//journal-meta/contrib-group')->length);
+        $this->assertSame(1, $this->xpath($result)->query('//author-notes/fn')->length);
+        $this->assertSame(
+            preg_match_all('/\n[ \t]*\n/', $jats),
+            preg_match_all('/\n[ \t]*\n/', $result),
+            'No blank line should be left behind'
+        );
+    }
+
+    /**
+     * In mixed content the whitespace next to a removed element can be a word space, so it stays.
+     */
+    public function testRemovalKeepsWordSpaceInMixedContent(): void
+    {
+        $result = $this->prepareJats(
+            $this->jatsWithBody('<p><bold>A</bold> <supplementary-material xlink:href="https://example.org/data.csv"/>text</p>'),
+            'jtest.pdf'
+        );
+
+        $this->assertIsString($result);
+        $xpath = $this->xpath($result);
+        $this->assertSame(0, $xpath->query('//supplementary-material')->length);
+        $this->assertSame('A text', $xpath->evaluate('string(//body/p)'));
+    }
+
+    /**
+     * A parent holding only inline elements has no text of its own, so the space before a
+     * removed element is kept unless whitespace follows it too.
+     */
+    public function testRemovalKeepsWordSpaceBetweenInlineElements(): void
+    {
+        $result = $this->prepareJats(
+            $this->jatsWithBody('<p><bold>A</bold> <supplementary-material xlink:href="https://example.org/data.csv"/><italic>B</italic></p>'),
+            'jtest.pdf'
+        );
+
+        $this->assertIsString($result);
+        $xpath = $this->xpath($result);
+        $this->assertSame(0, $xpath->query('//supplementary-material')->length);
+        $this->assertSame('A B', $xpath->evaluate('string(//body/p)'));
+    }
+
+    public function testSpaceBetweenInlineElementsIsKept(): void
+    {
+        $result = $this->prepareJats(
+            $this->jatsWithBody('<p><bold>1.</bold> <italic>Internal workshop.</italic></p>'),
+            'jtest.pdf'
+        );
+
+        $this->assertIsString($result);
+        $this->assertSame(
+            '1. Internal workshop.',
+            $this->xpath($result)->evaluate('string(//body/p)')
+        );
+    }
+
     public function testSelfUriIsInsertedBeforeAnExistingSelfUri(): void
     {
         $jats = $this->jats('<self-uri content-type="html" xlink:href="article.html"/>');
