@@ -245,7 +245,7 @@ class JatsDocument
         $this->dom = new DOMDocument();
 
         // loadXML() raises a ValueError rather than failing on an empty document
-        if ($this->jats === '' || !$this->dom->loadXML($this->jats)) {
+        if ($this->jats === '' || !$this->dom->loadXML($this->jats, LIBXML_NONET)) {
             return ['plugins.importexport.pmc.export.failure.loadJats'];
         }
 
@@ -271,7 +271,9 @@ class JatsDocument
             return ['plugins.importexport.pmc.export.failure.jatsNodeMissing', 'journal-meta[1]'];
         }
 
-        $journalId = $this->dom->createElement('journal-id', $nlmTitle);
+        // As a text node: createElement() would read an "&" in the title as the start of an entity
+        $journalId = $this->dom->createElement('journal-id');
+        $journalId->appendChild($this->dom->createTextNode($nlmTitle));
         $journalId->setAttribute('journal-id-type', 'pmc');
         $journalMeta->insertBefore($journalId, $firstChild);
 
@@ -581,16 +583,21 @@ class JatsDocument
 
                 $id = $fn->getAttribute('id');
                 if ($id !== '' && $kept[$statement] !== '') {
-                    foreach ($this->xpath->query("//xref[@ref-type='author-notes' and @rid='{$id}']") as $xref) {
+                    // The IDs are compared here rather than in the query, as this runs before
+                    // validation and a quote in an ID would break an XPath literal
+                    foreach (iterator_to_array($this->xpath->query("//xref[@ref-type='author-notes']")) as $xref) {
                         /** @var DOMElement $xref */
+                        if ($xref->getAttribute('rid') !== $id) {
+                            continue;
+                        }
                         $xref->setAttribute('rid', $kept[$statement]);
                         // An author referring to both copies needs only the one
-                        $siblings = $this->xpath->query(
-                            "preceding-sibling::xref[@ref-type='author-notes' and @rid='{$kept[$statement]}']",
-                            $xref
-                        );
-                        if ($siblings->length) {
-                            $this->removeNode($xref);
+                        foreach ($this->xpath->query("preceding-sibling::xref[@ref-type='author-notes']", $xref) as $sibling) {
+                            /** @var DOMElement $sibling */
+                            if ($sibling->getAttribute('rid') === $kept[$statement]) {
+                                $this->removeNode($xref);
+                                break;
+                            }
                         }
                     }
                 }

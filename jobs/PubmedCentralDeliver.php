@@ -18,6 +18,8 @@ namespace APP\plugins\generic\pubmedCentral\jobs;
 
 use APP\core\Application;
 use APP\facades\Repo;
+use APP\plugins\generic\pubmedCentral\classes\HostKeyMismatchException;
+use APP\plugins\generic\pubmedCentral\classes\HostNotAllowedException;
 use APP\plugins\generic\pubmedCentral\PubmedCentralExportPlugin;
 use APP\plugins\PubObjectsExportPlugin;
 use APP\publication\Publication;
@@ -47,6 +49,7 @@ class PubmedCentralDeliver extends BaseJob
 
     /**
      * Execute the job.
+     *
      * @throws JobException
      */
     public function handle(): void
@@ -89,10 +92,15 @@ class PubmedCentralDeliver extends BaseJob
         try {
             $plugin->deliverToEndpoint($package['path'], $package['filename'] . '.zip', $context);
             $plugin->updateStatus($object, PubObjectsExportPlugin::EXPORT_STATUS_REGISTERED);
+        } catch (HostKeyMismatchException|HostNotAllowedException $e) {
+            // Retrying would only meet the same key or host, until someone updates the settings
+            $plugin->updateStatus($object, PubObjectsExportPlugin::EXPORT_STATUS_ERROR, $e->getMessage());
+            return;
         } catch (Throwable $e) {
             // A refused connection or a dropped transfer may well succeed on a later
-            // attempt, so this one is thrown for the queue to retry
-            $plugin->updateStatus($object, PubObjectsExportPlugin::EXPORT_STATUS_ERROR, $e->getMessage());
+            // attempt, so this one is thrown for the queue to retry, and marked for the
+            // automatic deposit task to try again should every attempt fail
+            $plugin->updateStatus($object, PubObjectsExportPlugin::EXPORT_STATUS_ERROR, $e->getMessage(), true);
             throw new JobException($e->getMessage());
         } finally {
             $plugin->deleteTempFile($package['path']);
@@ -120,7 +128,8 @@ class PubmedCentralDeliver extends BaseJob
             return;
         }
 
-        $plugin->updateStatus($object, PubObjectsExportPlugin::EXPORT_STATUS_ERROR, $exception->getMessage());
+        // Not a problem with the article or the settings, so the automatic deposit task tries it again
+        $plugin->updateStatus($object, PubObjectsExportPlugin::EXPORT_STATUS_ERROR, $exception->getMessage(), true);
     }
 
     /**

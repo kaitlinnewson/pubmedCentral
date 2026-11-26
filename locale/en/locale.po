@@ -27,8 +27,16 @@ msgstr "Host"
 msgid "plugins.importexport.pmc.username"
 msgstr "Username"
 
+msgid "plugins.importexport.pmc.hostNotPmc"
+msgstr ""
+"This host is not a PubMed Central server (ncbi.nlm.nih.gov). Packages deposited to it "
+"do not reach PubMed Central, so use it only for testing."
+
 msgid "plugins.importexport.pmc.password"
 msgstr "Password"
+
+msgid "plugins.importexport.pmc.passwordSaved"
+msgstr "Password (saved; leave blank to keep it)"
 
 msgid "plugins.importexport.pmc.path"
 msgstr "Path (optional, defaults to the root directory)"
@@ -80,6 +88,22 @@ msgid "plugins.importexport.pmc.export.failure.fileTooLarge"
 msgstr ""
 "'{$param}' is larger than the 2 GB PubMed Central accepts for a single file. Deposit "
 "the data in a public repository and cite it in the JATS XML instead, then try again."
+
+msgid "plugins.importexport.pmc.export.failure.hostKeyMismatch"
+msgstr ""
+"{$param} The package was not delivered, and no credentials were sent to the server. If "
+"the server's host key has changed, enter its new fingerprint in the plugin settings and "
+"deposit again."
+
+msgid "plugins.importexport.pmc.export.failure.hostNotAllowed"
+msgstr ""
+"The SFTP host '{$param}' is on a private or reserved network, which deposits are not sent "
+"to. Check the host in the plugin settings."
+
+msgid "plugins.importexport.pmc.export.failure.hostKeyMismatch.detail"
+msgstr ""
+"The SFTP server at {$host} presented a host key with the fingerprint {$fingerprint}, which "
+"does not match the host key recorded for it or the fingerprint entered in the plugin settings."
 
 msgid "plugins.importexport.pmc.export.failure.jatsValidation"
 msgstr "JATS validation failed. The system returned validation errors: '{$param}'"
@@ -216,14 +240,60 @@ msgid "plugins.importexport.pmc.export.failure.missingMediaFile.none"
 msgstr ""
 "'{$reference}' was referenced, but the publication has no media files or supplementary galleys."
 
+msgid "plugins.importexport.pmc.settings.form.hostKey"
+msgstr "Server Host Key"
+
+msgid "plugins.importexport.pmc.settings.form.hostKey.description"
+msgstr ""
+"The plugin records the server's host key on the first deposit and will not deposit if "
+"the key later changes. If you have the server's fingerprint, enter it to check the first "
+"deposit as well, or to replace the recorded key when the server's key changes."
+
+msgid "plugins.importexport.pmc.settings.form.hostKey.recorded"
+msgstr "Recorded fingerprint for {$host}:"
+
+msgid "plugins.importexport.pmc.settings.form.hostKey.compare"
+msgstr "To compare it, run this on a computer outside the server's network:"
+
+msgid "plugins.importexport.pmc.settings.form.hostKey.none"
+msgstr "No host key has been recorded for this host. It will be recorded on the first deposit."
+
+msgid "plugins.importexport.pmc.settings.form.hostKeyFingerprint"
+msgstr "Host key fingerprint (optional)"
+
+msgid "plugins.importexport.pmc.settings.form.clearHostKey"
+msgstr "Clear Recorded Host Key"
+
+msgid "plugins.importexport.pmc.settings.form.clearHostKey.confirm"
+msgstr ""
+"The next deposit will record whatever host key the server presents, without checking it. "
+"Only do this if the server's host key has changed and you do not have its new "
+"fingerprint; otherwise, enter the new fingerprint in the settings instead. Clear the "
+"recorded host key?"
+
+msgid "plugins.importexport.pmc.settings.form.clearHostKey.success"
+msgstr "The recorded host key was cleared. The next deposit will record a new one."
+
+msgid "plugins.importexport.pmc.settings.form.hostKeyFingerprintInvalid"
+msgstr ""
+"Enter the fingerprint as shown by \"ssh-keygen -l\": \"SHA256:\" followed by 43 "
+"characters, or the colon-separated MD5 form."
+
 msgid "plugins.importexport.pmc.settings.form.automaticRegistration.description"
 msgstr ""
 "Deposit newly published articles to PubMed Central automatically. Deposits are "
 "sent once a day, so an article may take up to a day after publication to "
-"reach PubMed Central."
+"reach PubMed Central. A deposit that could not reach the server is tried again the "
+"next day; one that failed for another reason, such as invalid JATS or missing "
+"metadata, is only sent again when deposited by hand once the problem is fixed."
 
 msgid "plugins.importexport.pmc.settings.form.nlmTitleRequired"
 msgstr "Please provide the journal's NLM Title Abbreviation."
+
+msgid "plugins.importexport.pmc.settings.form.passwordRequiredForNewHost"
+msgstr ""
+"Enter the password again when changing the host or port, so that the saved password is "
+"not sent to a different server."
 
 msgid "plugins.importexport.pmc.settings.form.accountIncomplete"
 msgstr "Please provide the host, username and password, or leave all three blank."

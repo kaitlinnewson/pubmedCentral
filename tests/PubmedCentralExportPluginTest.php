@@ -15,29 +15,37 @@ namespace APP\plugins\generic\pubmedCentral\tests;
 use APP\issue\Issue;
 use APP\issue\Repository as IssueRepository;
 use APP\journal\Journal;
+use APP\plugins\generic\pubmedCentral\classes\HostKeyConnectionProvider;
+use APP\plugins\generic\pubmedCentral\classes\HostKeyMismatchException;
+use APP\plugins\generic\pubmedCentral\classes\HostNotAllowedException;
 use APP\plugins\generic\pubmedCentral\classes\ImportedHistory;
 use APP\plugins\generic\pubmedCentral\classes\JatsDocument;
 use APP\plugins\generic\pubmedCentral\PubmedCentralExportPlugin;
 use APP\plugins\PubObjectsExportPlugin;
+use APP\publication\DAO as PublicationDAO;
 use APP\publication\enums\VersionStage;
 use APP\publication\Publication;
+use APP\publication\Repository as PublicationRepository;
+use APP\submission\DAO as SubmissionDAO;
 use APP\submission\Repository as SubmissionRepository;
 use APP\submission\Submission;
 use APP\submissionFile\Repository as SubmissionFileRepository;
-use PKP\config\Config;
-use PKP\db\DAORegistry;
-use PKP\file\FileManager;
-use PKP\galley\Galley;
-use PKP\jats\JatsFile;
-use PKP\jats\Repository as JatsRepository;
-use PKP\submission\Genre;
-use PKP\submission\GenreDAO;
 use DOMDocument;
 use DOMXPath;
 use Illuminate\Support\LazyCollection;
 use PHPUnit\Framework\Attributes\CoversClass;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\MockObject\MockObject;
+use PKP\config\Config;
+use PKP\core\Core;
+use PKP\db\DAORegistry;
+use PKP\db\DAOResultFactory;
+use PKP\file\FileManager;
+use PKP\galley\Galley;
+use PKP\jats\JatsFile;
+use PKP\jats\Repository as JatsRepository;
+use PKP\submission\Genre;
+use PKP\submission\GenreDAO;
 use PKP\submissionFile\Collector as SubmissionFileCollector;
 use PKP\submissionFile\enums\MediaVariantType;
 use PKP\submissionFile\SubmissionFile;
@@ -186,7 +194,8 @@ class PubmedCentralExportPluginTest extends PKPTestCase
      * service resolving each file id to a path.
      *
      * @param array $paths [file id => path in the file store]
-     * @param array $sizes [path in the file store => size in bytes], for files not the default 1 kB
+     * @param array $sizes [path in the file store => size in bytes, or an exception to throw],
+     *  for files not the default 1 kB
      */
     private function bindMediaFiles(array $mediaFiles, array $paths, array $sizes = []): MockObject
     {
@@ -224,7 +233,11 @@ class PubmedCentralExportPluginTest extends PKPTestCase
 
                     public function fileSize(string $path): int
                     {
-                        return $this->sizes[$path] ?? 1024;
+                        $size = $this->sizes[$path] ?? 1024;
+                        if ($size instanceof \Throwable) {
+                            throw $size;
+                        }
+                        return $size;
                     }
                 };
             }
@@ -853,7 +866,6 @@ class PubmedCentralExportPluginTest extends PKPTestCase
      * @param array $mediaPaths [file id => path in the file store] for the media files; ids
      *  12 and 13 are the PDF galley and the JATS
      * @param array $sizes [path in the file store => size in bytes], for files not the default 1 kB
-     *
      * @param array $supplementaryGalleys Each as ['label', 'name', 'path', optional 'urlRemote']
      *
      * @return array [plugin, package, publication]
@@ -1093,6 +1105,38 @@ class PubmedCentralExportPluginTest extends PKPTestCase
 
         $this->assertArrayNotHasKey('error', $package);
         unlink($package['path']);
+    }
+
+    /**
+     * Packages hold copies of the publication's files, so they are built in the
+     * installation's temporary files directory rather than the system's.
+     */
+    public function testCreateZipBuildsThePackageInTheInstallationsTemporaryDirectory(): void
+    {
+        [, $package] = $this->packageWithMedia([], [], '<p>Body</p>');
+
+        $this->assertStringStartsWith(realpath($this->filesDir) . '/temp/', realpath($package['path']));
+        unlink($package['path']);
+    }
+
+    /**
+     * An exception part way through building a package does not leave the package behind.
+     */
+    public function testCreateZipRemovesThePackageWhenAnExceptionInterrupts(): void
+    {
+        try {
+            $this->packageWithMedia(
+                [$this->createMediaFile(1, 11, 'figure1.tif')],
+                [11 => 'journals/1/figure1.tif'],
+                '<fig id="f1"><graphic xlink:href="figure1.tif"/></fig>',
+                sizes: ['journals/1/figure1.tif' => new \RuntimeException('The file store failed')]
+            );
+            $this->fail('The exception was not passed on');
+        } catch (\RuntimeException $e) {
+            $this->assertSame('The file store failed', $e->getMessage());
+        }
+
+        $this->assertSame([], glob($this->filesDir . '/temp/PubmedCentralExport_*'));
     }
 
     /**
@@ -1363,44 +1407,46 @@ class PubmedCentralExportPluginTest extends PKPTestCase
     //
     // validateJats()
     //
+    /**
+     * Each case is [public identifier, system identifier, the file expected], where
+     * "{dtd}" stands for the bundled DTD's directory and null means the entity is refused.
+     */
     public static function jatsEntityProvider(): array
     {
         return [
             'JATS 1.2 public identifier' => [
                 '-//NLM//DTD JATS (Z39.96) Journal Publishing DTD v1.2 20190208//EN',
                 'http://example.org/wherever.dtd',
-                true,
+                '{dtd}/JATS-journalpublishing1.dtd',
             ],
             'JATS 1.2 system identifier over https' => [
                 null,
                 'https://jats.nlm.nih.gov/publishing/1.2/JATS-journalpublishing1.dtd',
-                true,
+                '{dtd}/JATS-journalpublishing1.dtd',
             ],
-            'another JATS version' => [
-                null,
-                'http://jats.nlm.nih.gov/publishing/1.1/JATS-journalpublishing1.dtd',
-                false,
-            ],
-            'a module the DTD pulls in' => [
-                null,
-                '/somewhere/dtd/jats/1.2/JATS-common1.ent',
-                false,
-            ],
+            'a module the bundled DTD pulls in' => [null, '{dtd}/JATS-common1.ent', '{dtd}/JATS-common1.ent'],
+            'a module as a file URL' => [null, 'file://{dtd}/mathml/mmlalias.ent', '{dtd}/mathml/mmlalias.ent'],
+            'another JATS version' => [null, 'http://jats.nlm.nih.gov/publishing/1.1/JATS-journalpublishing1.dtd', null],
+            'any other URL' => [null, 'http://169.254.169.254/latest/meta-data/', null],
+            'a file elsewhere on the server' => [null, '/etc/passwd', null],
+            'a file URL elsewhere on the server' => [null, 'file:///etc/passwd', null],
+            'a path out of the DTD directory' => [null, '{dtd}/../../../config.inc.php', null],
+            'a file the DTD directory does not hold' => [null, '{dtd}/missing.ent', null],
         ];
     }
 
+    /**
+     * Validation loads the bundled DTD and its modules, and nothing else, so that a
+     * document cannot have the server read other files or make requests.
+     */
     #[DataProvider('jatsEntityProvider')]
-    public function testResolveJatsEntityPrefersTheBundledDtd(?string $publicId, string $systemId, bool $bundled): void
+    public function testResolveJatsEntityOnlyLoadsTheBundledDtd(?string $publicId, string $systemId, ?string $expected): void
     {
-        $resolved = $this->invoke($this->createPlugin(), 'resolveJatsEntity', [$publicId, $systemId]);
+        $dtd = realpath(Core::getBaseDir() . '/dtd/jats/1.2');
 
-        if (!$bundled) {
-            $this->assertSame($systemId, $resolved, 'Anything else should be left to libxml');
-            return;
-        }
+        $resolved = $this->invoke($this->createPlugin(), 'resolveJatsEntity', [$publicId, str_replace('{dtd}', $dtd, $systemId)]);
 
-        $this->assertStringEndsWith('/dtd/jats/1.2/JATS-journalpublishing1.dtd', $resolved);
-        $this->assertFileExists($resolved);
+        $this->assertSame($expected === null ? null : realpath(str_replace('{dtd}', $dtd, $expected)), $resolved === null ? null : realpath($resolved));
     }
 
     public function testValidateJatsReportsDtdErrors(): void
@@ -2455,11 +2501,54 @@ class PubmedCentralExportPluginTest extends PKPTestCase
         $xpath = $this->xpath($result);
         $this->assertSame(
             ['con-1', 'con-3'],
-            array_map(fn ($fn) => $fn->getAttribute('id'), iterator_to_array($xpath->query("//author-notes/fn")))
+            array_map(fn ($fn) => $fn->getAttribute('id'), iterator_to_array($xpath->query('//author-notes/fn')))
         );
         $this->assertSame(
             ['con-1', 'con-1', 'con-3'],
             array_map(fn ($xref) => $xref->getAttribute('rid'), iterator_to_array($xpath->query('//contrib/xref')))
+        );
+    }
+
+    /**
+     * The document has not been validated yet, so an ID holding a quote must not break the
+     * comparison of a statement's references.
+     */
+    public function testCompetingInterestsWithAQuoteInAnIdAreStillMerged(): void
+    {
+        $contribGroup = <<<'XML'
+            <contrib-group>
+                <contrib contrib-type="author"><name><surname>A</surname></name><xref ref-type="author-notes" rid="con'1"/></contrib>
+                <contrib contrib-type="author"><name><surname>B</surname></name><xref ref-type="author-notes" rid="con'1"/><xref ref-type="author-notes" rid="con'2"/></contrib>
+            </contrib-group>
+            <author-notes>
+                <fn fn-type="coi-statement" id="con'1"><p>None.</p></fn>
+                <fn fn-type="coi-statement" id="con'2"><p>None.</p></fn>
+            </author-notes>
+            XML;
+
+        $result = $this->prepareJats($this->jats($contribGroup), 'jtest.pdf');
+
+        $this->assertIsString($result);
+        $xpath = $this->xpath($result);
+        $this->assertSame(1, $xpath->query('//author-notes/fn')->length);
+        // B referred to both copies, and keeps one reference
+        $this->assertSame(
+            ["con'1", "con'1"],
+            array_map(fn ($xref) => $xref->getAttribute('rid'), iterator_to_array($xpath->query('//contrib/xref')))
+        );
+    }
+
+    /**
+     * An NLM title is plain text, so an ampersand in it is kept rather than read as an entity.
+     */
+    public function testAnAmpersandInTheNlmTitleIsKept(): void
+    {
+        $result = (new JatsDocument($this->jats(), 'jtest.pdf'))->prepare('J Biol & Med', null);
+
+        $this->assertIsString($result);
+        $this->assertSame(
+            'J Biol & Med',
+            $this->xpath($result)->evaluate("string(//journal-meta/journal-id[@journal-id-type='pmc'])")
         );
     }
 
@@ -3167,5 +3256,237 @@ class PubmedCentralExportPluginTest extends PKPTestCase
     public function testOnlyVersionsOfRecordAreListedForDeposit(): void
     {
         $this->assertSame([VersionStage::VERSION_OF_RECORD], $this->createPlugin()->getExportableVersionStages());
+    }
+
+    //
+    // Host keys
+    //
+
+    private const HOST_KEY = 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAICqQGxvlHkmK4AuiP4zU7sstYcbsmJKw33GNEEbu/gCl';
+
+    /**
+     * Build the plugin with its settings held in memory, so that what it saves can be read back.
+     *
+     * @param array $settings Plugin setting name => value
+     */
+    private function createPluginWithStoredSettings(array &$settings, array $methods = []): PubmedCentralExportPlugin&MockObject
+    {
+        $plugin = $this->getMockBuilder(PubmedCentralExportPlugin::class)
+            ->disableOriginalConstructor()
+            ->onlyMethods(['getSetting', 'updateSetting', ...$methods])
+            ->getMock();
+        // Not an arrow function, which would capture the settings by value
+        $plugin->method('getSetting')->willReturnCallback(function ($contextId, $name) use (&$settings) {
+            return $settings[$name] ?? null;
+        });
+        $plugin->method('updateSetting')->willReturnCallback(
+            function ($contextId, $name, $value) use (&$settings) {
+                $settings[$name] = $value;
+            }
+        );
+        return $plugin;
+    }
+
+    /**
+     * Keys are recorded per host and port, so moving from a test server to the production
+     * one records the production key rather than refusing it.
+     */
+    public function testHostKeysAreRecordedPerHost(): void
+    {
+        $settings = [];
+        $plugin = $this->createPluginWithStoredSettings($settings);
+
+        $plugin->recordHostKey(1, HostKeyConnectionProvider::hostId('test.example.org', 22), 'ssh-ed25519 AAAA1');
+        $plugin->recordHostKey(1, HostKeyConnectionProvider::hostId('sftp.example.org', 22), 'ssh-ed25519 AAAA2');
+
+        $this->assertSame('ssh-ed25519 AAAA1', $plugin->recordedHostKey(1, 'TEST.example.org', 22));
+        $this->assertSame('ssh-ed25519 AAAA2', $plugin->recordedHostKey(1, 'sftp.example.org', 22));
+        $this->assertNull($plugin->recordedHostKey(1, 'sftp.example.org', 2222));
+        $this->assertNull($plugin->recordedHostKey(1, null, 22));
+
+        $plugin->recordHostKey(1, HostKeyConnectionProvider::hostId('test.example.org', 22), null);
+
+        $this->assertNull($plugin->recordedHostKey(1, 'test.example.org', 22));
+        $this->assertSame('ssh-ed25519 AAAA2', $plugin->recordedHostKey(1, 'sftp.example.org', 22));
+    }
+
+    public function testClearingTheRecordedHostKeyForgetsOnlyTheSavedHost(): void
+    {
+        $settings = [
+            'host' => 'sftp.example.org',
+            'port' => '2222',
+            'hostKeys' => ['sftp.example.org:2222' => self::HOST_KEY, 'test.example.org:22' => self::HOST_KEY],
+        ];
+        $plugin = $this->createPluginWithStoredSettings($settings);
+
+        $plugin->clearRecordedHostKey(1);
+
+        $this->assertSame(['test.example.org:22' => self::HOST_KEY], $settings['hostKeys']);
+    }
+
+    /**
+     * The connection is given the key recorded for its host, and records the one a first connection presents.
+     */
+    public function testConnectionProviderRecordsTheKeyForItsHost(): void
+    {
+        $settings = ['hostKeyFingerprint' => 'SHA256:UnuSuf27CkGdsMtclRwXM+Kwlfxm3tq7c8x2OcD6rZM'];
+        $plugin = $this->createPluginWithStoredSettings($settings);
+        $account = ['host' => 'sftp.example.org', 'username' => 'user', 'password' => 'secret'];
+
+        $provider = $this->invoke($plugin, 'createConnectionProvider', [1, $account, 2222]);
+
+        $recordKey = (fn () => $this->recordKey)->call($provider);
+        $this->assertSame('SHA256:UnuSuf27CkGdsMtclRwXM+Kwlfxm3tq7c8x2OcD6rZM', (fn () => $this->expectedFingerprint)->call($provider));
+        $this->assertNull((fn () => $this->recordedKey)->call($provider));
+
+        $recordKey(self::HOST_KEY);
+
+        $this->assertSame(['sftp.example.org:2222' => self::HOST_KEY], $settings['hostKeys']);
+        $provider = $this->invoke($plugin, 'createConnectionProvider', [1, $account, 2222]);
+        $this->assertSame(self::HOST_KEY, (fn () => $this->recordedKey)->call($provider));
+    }
+
+    public function testPmcHostsAreRecognized(): void
+    {
+        $this->assertTrue(PubmedCentralExportPlugin::isPmcHost('ftp-private.ncbi.nlm.nih.gov'));
+        $this->assertTrue(PubmedCentralExportPlugin::isPmcHost(' FTP-Private.NCBI.nlm.nih.gov '));
+        $this->assertFalse(PubmedCentralExportPlugin::isPmcHost('eu-central-1.sftpcloud.io'));
+        $this->assertFalse(PubmedCentralExportPlugin::isPmcHost('ncbi.nlm.nih.gov.example.com'));
+        $this->assertFalse(PubmedCentralExportPlugin::isPmcHost('evilncbi.nlm.nih.gov'));
+        $this->assertFalse(PubmedCentralExportPlugin::isPmcHost(null));
+    }
+
+    public function testDeliveryReportsAHostOnAPrivateNetwork(): void
+    {
+        $settings = ['host' => 'internal.example.org', 'username' => 'user', 'password' => 'secret'];
+        $plugin = $this->createPluginWithStoredSettings($settings, ['createConnectionProvider']);
+
+        $provider = $this->createMock(HostKeyConnectionProvider::class);
+        $provider->method('provideConnection')->willThrowException(new HostNotAllowedException('internal.example.org'));
+        $plugin->method('createConnectionProvider')->willReturn($provider);
+
+        try {
+            $plugin->deliverToEndpoint('/nonexistent.zip', 'package.zip', $this->createJournal());
+            $this->fail('A host on a private network was not reported');
+        } catch (HostNotAllowedException $e) {
+            $this->assertSame('internal.example.org', $e->host);
+            $this->assertStringContainsString('plugins.importexport.pmc.export.failure.hostNotAllowed', $e->getMessage());
+        }
+    }
+
+    /**
+     * A mismatch is reported in the depositor's terms, naming the host and the key it presented.
+     */
+    public function testDeliveryReportsAHostKeyMismatch(): void
+    {
+        $settings = ['host' => 'sftp.example.org', 'username' => 'user', 'password' => 'secret'];
+        $plugin = $this->createPluginWithStoredSettings($settings, ['createConnectionProvider']);
+
+        $provider = $this->createMock(HostKeyConnectionProvider::class);
+        $provider->method('provideConnection')
+            ->willThrowException(new HostKeyMismatchException('sftp.example.org:22', 'SHA256:abc'));
+        $plugin->method('createConnectionProvider')->willReturn($provider);
+
+        try {
+            $plugin->deliverToEndpoint('/nonexistent.zip', 'package.zip', $this->createJournal());
+            $this->fail('A host key mismatch was not reported');
+        } catch (HostKeyMismatchException $e) {
+            $this->assertSame('sftp.example.org:22', $e->host);
+            $this->assertSame('SHA256:abc', $e->fingerprint);
+            $this->assertStringContainsString('plugins.importexport.pmc.export.failure.hostKeyMismatch', $e->getMessage());
+            $this->assertInstanceOf(HostKeyMismatchException::class, $e->getPrevious());
+        }
+    }
+
+    //
+    // Retrying failed deposits
+    //
+
+    /**
+     * Stand in for a repository whose exportable objects are the given ones for each deposit status.
+     *
+     * @param array $byStatus [status => objects]
+     */
+    private function bindExportable(string $repositoryClass, string $daoClass, array $byStatus): void
+    {
+        $dao = $this->createMock($daoClass);
+        $dao->method('getExportable')->willReturnCallback(
+            function ($contextId, $pubIdType, $title, $author, $issueId, $settingName, $settingValue) use ($byStatus) {
+                $result = $this->createMock(DAOResultFactory::class);
+                $result->method('toArray')->willReturn($byStatus[$settingValue] ?? []);
+                return $result;
+            }
+        );
+        $repository = $this->createMock($repositoryClass);
+        $repository->dao = $dao;
+        app()->instance($repositoryClass, $repository);
+    }
+
+    /**
+     * Core's automatic deposit only picks up objects not yet deposited or stale. Failures
+     * to reach the server are added, and other failures wait for a deposit by hand.
+     */
+    public function testAutomaticDepositRetriesOnlyFailuresToReachTheServer(): void
+    {
+        $notDeposited = new Submission();
+        $notDeposited->setId(1);
+        $unreachable = new Submission();
+        $unreachable->setId(2);
+        $unreachable->setData(PubmedCentralExportPlugin::SETTING_RETRYABLE, '1');
+        $invalid = new Submission();
+        $invalid->setId(3);
+        $this->bindExportable(SubmissionRepository::class, SubmissionDAO::class, [
+            PubObjectsExportPlugin::EXPORT_STATUS_DEPOSITABLE => [$notDeposited],
+            PubObjectsExportPlugin::EXPORT_STATUS_ERROR => [$unreachable, $invalid],
+        ]);
+
+        $articles = $this->createPlugin()->getAllDepositableArticles($this->createJournal());
+
+        $this->assertSame([1, 2], array_map(fn (Submission $article) => $article->getId(), $articles));
+        app()->forgetInstance(SubmissionRepository::class);
+    }
+
+    public function testAutomaticDepositRetriesOnlyPublicationsThatFailedToReachTheServer(): void
+    {
+        $notDeposited = new Publication();
+        $notDeposited->setId(1);
+        $unreachable = new Publication();
+        $unreachable->setId(2);
+        $unreachable->setData(PubmedCentralExportPlugin::SETTING_RETRYABLE, '1');
+        $invalid = new Publication();
+        $invalid->setId(3);
+        $this->bindExportable(PublicationRepository::class, PublicationDAO::class, [
+            PubObjectsExportPlugin::EXPORT_STATUS_DEPOSITABLE => [$notDeposited],
+            PubObjectsExportPlugin::EXPORT_STATUS_ERROR => [$unreachable, $invalid],
+        ]);
+
+        $publications = $this->createPlugin()->getAllDepositablePublications($this->createJournal());
+
+        $this->assertSame([1, 2], array_map(fn (Publication $publication) => $publication->getId(), $publications));
+        app()->forgetInstance(PublicationRepository::class);
+    }
+
+    /**
+     * Any status update other than a retryable failure clears the mark, so a deposit that
+     * later succeeds, or fails for another reason, is not retried.
+     */
+    public function testStatusUpdatesSetAndClearTheRetryableMark(): void
+    {
+        $saved = [];
+        $plugin = $this->getMockBuilder(PubmedCentralExportPlugin::class)
+            ->disableOriginalConstructor()
+            ->onlyMethods(['updateObject'])
+            ->getMock();
+        $plugin->method('updateObject')->willReturnCallback(function ($object, $params) use (&$saved) {
+            $saved[] = $params[PubmedCentralExportPlugin::SETTING_RETRYABLE];
+        });
+        $article = new Submission();
+
+        $plugin->updateStatus($article, PubObjectsExportPlugin::EXPORT_STATUS_ERROR, 'Unable to connect', true);
+        $plugin->updateStatus($article, PubObjectsExportPlugin::EXPORT_STATUS_ERROR, 'Invalid JATS');
+        $plugin->updateStatus($article, PubObjectsExportPlugin::EXPORT_STATUS_REGISTERED);
+
+        $this->assertSame(['1', null, null], $saved);
+        $this->assertContains(PubmedCentralExportPlugin::SETTING_RETRYABLE, $plugin->getObjectAdditionalSettings());
     }
 }

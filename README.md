@@ -131,9 +131,47 @@ as the jobs are queued, so a slow SFTP endpoint never blocks the browser, and ea
 recorded against it individually. An object waiting on its job shows the Submitted status; when the
 job runs it becomes Deposited, or Failed with the error message.
 
+A deposit that fails because the server could not be reached (a refused connection, a timeout, or
+a dropped transfer) is retried by the queue, and if every attempt fails, the daily automatic
+deposit tries it again. A deposit that fails for any other reason, such as invalid JATS, missing
+metadata, a file that is too large, a host key mismatch or a host on a private network, stays
+Failed until it is deposited again by hand, since sending it again unchanged would fail the same way.
+
 The SFTP account is optional -- Export can be used to download packages and deliver them manually --
 but partially filling it in is not: either all of host, username, and password, or none. Automatic
 deposit requires a complete account. Deposit actions only appear once all three are set.
+
+### SFTP Host
+
+PubMed Central's SFTP servers are under `ncbi.nlm.nih.gov`, and the settings note when the host is
+not, since packages deposited elsewhere do not reach PubMed Central. Deposits are not sent to a host
+on a private or reserved network (the server itself, private address ranges, or link-local addresses
+such as cloud metadata services), and the plugin connects to the address it checked. Connection
+failures are reported without their cause, which would otherwise tell whether a port is open.
+
+### SFTP Host Key
+
+The plugin records the SFTP server's host key the first time it connects to a host, and refuses to
+deposit to that host if it later presents a different key, since that can mean another server is
+impersonating it. The check happens before the username and password are sent. A deposit
+refused this way fails with a message naming the host and the fingerprint of the key it presented,
+and is not retried.
+
+Keys are recorded per host and port, so moving from a test server to the production one records the
+production server's key on its first deposit. The settings show the fingerprint recorded for the
+host currently configured.
+
+The first connection to a host is not checked, unless the expected fingerprint is entered in the
+settings: `SHA256:` followed by 43 characters, as `ssh-keygen -l` shows it, or the colon-separated
+MD5 form. PubMed Central does not publish a fingerprint for its server. To check the recorded
+fingerprint, compare it with the output of
+`ssh-keyscan HOST | ssh-keygen -lf -` run from another network. An expected fingerprint applies to
+one host, and is cleared when the host or port is changed.
+
+When the server's key changes, enter its new fingerprint. Saving a fingerprint the recorded key does
+not match replaces the recorded key, and the next deposit records the server's key only if it has
+that fingerprint. If no fingerprint can be had, Clear Recorded Host Key forgets the recorded key
+after a confirmation, and the next deposit records whatever key the server presents, unchecked.
 
 ### Versions
 

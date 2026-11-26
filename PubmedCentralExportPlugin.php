@@ -17,9 +17,13 @@ namespace APP\plugins\generic\pubmedCentral;
 use APP\core\Application;
 use APP\facades\Repo;
 use APP\issue\Issue;
+use APP\journal\Journal;
 use APP\notification\NotificationManager;
 use APP\plugins\generic\pubmedCentral\classes\DeliveryHistoryImporter;
 use APP\plugins\generic\pubmedCentral\classes\form\PubmedCentralSettingsForm;
+use APP\plugins\generic\pubmedCentral\classes\HostKeyConnectionProvider;
+use APP\plugins\generic\pubmedCentral\classes\HostKeyMismatchException;
+use APP\plugins\generic\pubmedCentral\classes\HostNotAllowedException;
 use APP\plugins\generic\pubmedCentral\classes\ImportedHistory;
 use APP\plugins\generic\pubmedCentral\classes\JatsDocument;
 use APP\plugins\generic\pubmedCentral\jobs\PubmedCentralDeliver;
@@ -31,11 +35,11 @@ use DOMDocument;
 use Exception;
 use League\Flysystem\Filesystem;
 use League\Flysystem\PhpseclibV3\SftpAdapter;
-use League\Flysystem\PhpseclibV3\SftpConnectionProvider;
 use PKP\config\Config;
 use PKP\context\Context;
 use PKP\core\Core;
 use PKP\core\JSONMessage;
+use PKP\db\DAO;
 use PKP\db\DAORegistry;
 use PKP\file\FileManager;
 use PKP\galley\Galley;
@@ -47,6 +51,7 @@ use PKP\submission\GenreDAO;
 use PKP\submissionFile\enums\MediaVariantType;
 use PKP\submissionFile\SubmissionFile;
 use PKP\xslt\XSLTransformer;
+use Throwable;
 use ZipArchive;
 
 class PubmedCentralExportPlugin extends PubObjectsExportPlugin implements HasTaskScheduler
@@ -657,7 +662,7 @@ class PubmedCentralExportPlugin extends PubObjectsExportPlugin implements HasTas
 
         // Validate the XML document.
         $dom = new DOMDocument();
-        $dom->loadXML($returnXml);
+        $dom->loadXML($returnXml, LIBXML_NONET);
         if (!$noValidation) {
             $validation = $this->validateJats($dom);
             if (is_string($validation)) {
@@ -676,12 +681,92 @@ class PubmedCentralExportPlugin extends PubObjectsExportPlugin implements HasTas
     }
 
     /**
+     * The object setting marking a failed deposit as worth retrying: one that failed to
+     * reach the server, rather than one an editor or the settings have to fix.
+     */
+    public const SETTING_RETRYABLE = 'pubmedCentral::retryable';
+
+    /**
+     * @copydoc PubObjectsExportPlugin::updateStatus()
+     *
+     * @param bool $retryable Whether the automatic deposit task should try a failed deposit
+     *  again. Any other status update clears it.
+     */
+    public function updateStatus(Submission|Publication $object, string $status, ?string $failedMsg = null, bool $retryable = false)
+    {
+        $this->updateObject($object, [
+            $this->getDepositStatusSettingName() => $status,
+            $this->getFailedMsgSettingName() => $failedMsg,
+            self::SETTING_RETRYABLE => $retryable ? '1' : null,
+        ]);
+    }
+
+    /**
+     * @copydoc PubObjectsExportPlugin::getAllDepositableArticles()
+     *
+     * Also includes the articles whose deposit failed to reach the server, so that the
+     * automatic deposit task tries them again.
+     */
+    public function getAllDepositableArticles(Journal $context): array
+    {
+        return [
+            ...parent::getAllDepositableArticles($context),
+            ...$this->retryable(Repo::submission()->dao->getExportable(
+                $context->getId(),
+                null,
+                null,
+                null,
+                null,
+                $this->getDepositStatusSettingName(),
+                PubObjectsExportPlugin::EXPORT_STATUS_ERROR,
+                null,
+                $this->getExportableVersionStages()
+            )->toArray()),
+        ];
+    }
+
+    /**
+     * @copydoc PubObjectsExportPlugin::getAllDepositablePublications()
+     *
+     * Also includes the publications whose deposit failed to reach the server, so that the
+     * automatic deposit task tries them again.
+     */
+    public function getAllDepositablePublications(Journal $context): array
+    {
+        return [
+            ...parent::getAllDepositablePublications($context),
+            ...$this->retryable(Repo::publication()->dao->getExportable(
+                $context->getId(),
+                null,
+                null,
+                null,
+                null,
+                $this->getDepositStatusSettingName(),
+                PubObjectsExportPlugin::EXPORT_STATUS_ERROR,
+                null,
+                $this->getExportableVersionStages()
+            )->toArray()),
+        ];
+    }
+
+    /**
+     * The failed objects marked as worth retrying.
+     *
+     * @param Submission[]|Publication[] $objects
+     */
+    protected function retryable(array $objects): array
+    {
+        return array_values(array_filter($objects, fn (Submission|Publication $object) => (bool) $object->getData(self::SETTING_RETRYABLE)));
+    }
+
+    /**
      * @copydoc PubObjectsExportPlugin::getPluginSettingsPrefix()
      */
     public function getObjectAdditionalSettings(): array
     {
         return array_merge(parent::getObjectAdditionalSettings(), [
             $this->getDepositStatusSettingName(),
+            self::SETTING_RETRYABLE,
             ...ImportedHistory::SETTINGS,
         ]);
     }
@@ -692,6 +777,68 @@ class PubmedCentralExportPlugin extends PubObjectsExportPlugin implements HasTas
     public function nlmTitle(Context $context): string
     {
         return $this->getSetting($context->getId(), 'nlmTitle') ?? '';
+    }
+
+    /**
+     * The SFTP connection for a deposit, checking the server's host key before logging in.
+     */
+    protected function createConnectionProvider(int $contextId, array $settings, int $port): HostKeyConnectionProvider
+    {
+        $hostId = HostKeyConnectionProvider::hostId($settings['host'], $port);
+        return new HostKeyConnectionProvider(
+            $settings['host'],
+            $port,
+            $settings['username'],
+            $settings['password'],
+            $this->recordedHostKey($contextId, $settings['host'], $port),
+            HostKeyConnectionProvider::normalizeFingerprint($this->getSetting($contextId, 'hostKeyFingerprint')),
+            fn (string $key) => $this->recordHostKey($contextId, $hostId, $key)
+        );
+    }
+
+    /**
+     * The host key recorded on the first connection to a host, if there has been one.
+     */
+    public function recordedHostKey(int $contextId, ?string $host, int $port): ?string
+    {
+        if (!$host) {
+            return null;
+        }
+        $hostKeys = (array) $this->getSetting($contextId, 'hostKeys');
+        return $hostKeys[HostKeyConnectionProvider::hostId($host, $port)] ?? null;
+    }
+
+    /**
+     * Record the host key a server presented on its first connection, or forget it with null.
+     */
+    public function recordHostKey(int $contextId, string $hostId, ?string $key): void
+    {
+        $hostKeys = (array) $this->getSetting($contextId, 'hostKeys');
+        if ($key === null) {
+            unset($hostKeys[$hostId]);
+        } else {
+            $hostKeys[$hostId] = $key;
+        }
+        $this->updateSetting($contextId, 'hostKeys', $hostKeys, 'array');
+    }
+
+    /**
+     * Forget the host key recorded for the saved host, so that the next connection records
+     * whatever key the server presents.
+     */
+    public function clearRecordedHostKey(int $contextId): void
+    {
+        $host = (string) $this->getSetting($contextId, 'host');
+        $port = (int) $this->getSetting($contextId, 'port') ?: 22;
+        $this->recordHostKey($contextId, HostKeyConnectionProvider::hostId($host, $port), null);
+    }
+
+    /**
+     * Whether a host is one of PubMed Central's servers.
+     */
+    public static function isPmcHost(?string $host): bool
+    {
+        return (bool) preg_match('/(^|\.)ncbi\.nlm\.nih\.gov$/i', trim((string) $host));
     }
 
     /**
@@ -764,22 +911,43 @@ class PubmedCentralExportPlugin extends PubObjectsExportPlugin implements HasTas
     /**
      * Write a package to the configured PMC SFTP account.
      *
+     * @throws HostKeyMismatchException If the server presents a host key other than the
+     *  one recorded or expected for it, before any credentials are sent
+     * @throws HostNotAllowedException If the host is on a private or reserved network
      * @throws Exception If the package cannot be read, or the upload fails.
      */
     public function deliverToEndpoint(string $path, string $filename, Context $context): void
     {
         $settings = $this->getConnectionSettings($context);
-        $adapter = new SftpAdapter(
-            new SftpConnectionProvider(
-                $settings['host'],
-                $settings['username'],
-                $settings['password'],
-                null,
-                null,
-                (int) $settings['port'] ?: 22
-            ),
-            $settings['path'] ?: '/'
-        );
+        $port = (int) $settings['port'] ?: 22;
+        $provider = $this->createConnectionProvider($context->getId(), $settings, $port);
+
+        // Connected first, so that a host key mismatch is reported as such rather than
+        // as a failure to write the file
+        try {
+            $provider->provideConnection();
+        } catch (HostKeyMismatchException $e) {
+            throw new HostKeyMismatchException(
+                $e->host,
+                $e->fingerprint,
+                $this->convertErrorMessage([
+                    'plugins.importexport.pmc.export.failure.hostKeyMismatch',
+                    __('plugins.importexport.pmc.export.failure.hostKeyMismatch.detail', [
+                        'host' => $e->host,
+                        'fingerprint' => $e->fingerprint,
+                    ]),
+                ]),
+                $e
+            );
+        } catch (HostNotAllowedException $e) {
+            throw new HostNotAllowedException(
+                $e->host,
+                $this->convertErrorMessage(['plugins.importexport.pmc.export.failure.hostNotAllowed', $e->host]),
+                $e
+            );
+        }
+
+        $adapter = new SftpAdapter($provider, $settings['path'] ?: '/');
 
         $fp = fopen($path, 'r');
         if (!$fp) {
@@ -827,7 +995,7 @@ class PubmedCentralExportPlugin extends PubObjectsExportPlugin implements HasTas
         }
         $names = $this->packageNames($object, $context, $submission);
 
-        $zipPath = tempnam(sys_get_temp_dir(), 'PubmedCentralExport_');
+        $zipPath = $this->createTempPath();
         $zip = new ZipArchive();
         // OVERWRITE avoids the "Using empty file as ZipArchive" deprecation that is
         // raised when opening the empty file tempnam() has already created.
@@ -837,117 +1005,123 @@ class PubmedCentralExportPlugin extends PubObjectsExportPlugin implements HasTas
             return ['error' => $error];
         }
 
-        // Add a PDF article galley file
-        $pdfFilesFound = 0;
-        $articlePdfFilename = null;
-        foreach ($publication->getData('galleys') ?? [] as $galley) { /** @var Galley $galley */
-            // Ignore remote galleys
-            if ($galley->getData('urlRemote')) {
-                continue;
-            }
+        // An exception would otherwise leave the half-built package behind
+        try {
+            // Add a PDF article galley file
+            $pdfFilesFound = 0;
+            $articlePdfFilename = null;
+            foreach ($publication->getData('galleys') ?? [] as $galley) { /** @var Galley $galley */
+                // Ignore remote galleys
+                if ($galley->getData('urlRemote')) {
+                    continue;
+                }
 
-            // Ignore galleys with locales other than the submission locale
-            if ($galley->getData('locale') !== $locale) {
-                continue;
-            }
+                // Ignore galleys with locales other than the submission locale
+                if ($galley->getData('locale') !== $locale) {
+                    continue;
+                }
 
-            $submissionFileId = $galley->getData('submissionFileId');
-            $galleyFile = $submissionFileId ? Repo::submissionFile()->get($submissionFileId) : null;
+                $submissionFileId = $galley->getData('submissionFileId');
+                $galleyFile = $submissionFileId ? Repo::submissionFile()->get($submissionFileId) : null;
 
-            if (!$galleyFile || $galleyFile->getData('mimetype') !== 'application/pdf') {
-                continue;
-            }
+                if (!$galleyFile || $galleyFile->getData('mimetype') !== 'application/pdf') {
+                    continue;
+                }
 
-            $genre = $genreDao->getById($galleyFile->getData('genreId'));
+                $genre = $genreDao->getById($galleyFile->getData('genreId'));
 
-            $isPrimaryDocument =
-                ($genre->getCategory() == Genre::GENRE_CATEGORY_DOCUMENT) &&
-                !$genre->getSupplementary() &&
-                !$genre->getDependent();
+                $isPrimaryDocument =
+                    ($genre->getCategory() == Genre::GENRE_CATEGORY_DOCUMENT) &&
+                    !$genre->getSupplementary() &&
+                    !$genre->getDependent();
 
-            if (!$isPrimaryDocument) {
-                continue;
-            }
+                if (!$isPrimaryDocument) {
+                    continue;
+                }
 
-            $galleyPath = $fileService->get($galleyFile->getData('fileId'))->path;
-            $extension = pathinfo($galleyPath, PATHINFO_EXTENSION);
-            $galleyFilename = $names['stem'] . '.' . strtolower($extension);
-            $galleyFilePath = $galleyFilename;
-            $articlePdfFilename = $galleyFilename;
+                $galleyPath = $fileService->get($galleyFile->getData('fileId'))->path;
+                $extension = pathinfo($galleyPath, PATHINFO_EXTENSION);
+                $galleyFilename = $names['stem'] . '.' . strtolower($extension);
+                $galleyFilePath = $galleyFilename;
+                $articlePdfFilename = $galleyFilename;
 
-            if ($pdfFilesFound > 0) {
-                return $this->discardZip(
-                    $zip,
-                    $zipPath,
-                    ['plugins.importexport.pmc.export.failure.multipleArticleFiles']
-                );
-            }
+                if ($pdfFilesFound > 0) {
+                    return $this->discardZip(
+                        $zip,
+                        $zipPath,
+                        ['plugins.importexport.pmc.export.failure.multipleArticleFiles']
+                    );
+                }
 
-            if ($error = $this->fileTooLarge($galleyPath, $galleyFilename)) {
-                return $this->discardZip($zip, $zipPath, $error);
-            }
-
-            if (!$zip->addFile($filesDir . '/' . $galleyPath, $galleyFilePath)) {
-                return $this->discardZip(
-                    $zip,
-                    $zipPath,
-                    ['plugins.importexport.pmc.export.failure.addingFile', $zip->getStatusString()]
-                );
-            }
-            $pdfFilesFound++;
-        }
-
-        // Add article XML to the zip. Modifying the document is what decides which of
-        // the publication's media files are packaged, and under what names, so the
-        // media files are added afterwards.
-        $document = $this->exportXML(
-            $object,
-            null,
-            $context,
-            $noValidation,
-            $exportErrors,
-            $articlePdfFilename,
-            $genres,
-            $nlmTitle,
-            $names['stem']
-        );
-        if (is_array($document)) {
-            return $this->discardZip($zip, $zipPath, $document);
-        } else {
-            $articlePathName = $names['stem'] . '.xml';
-            if (!$zip->addFromString($articlePathName, $document)) {
-                return $this->discardZip(
-                    $zip,
-                    $zipPath,
-                    ['plugins.importexport.pmc.export.failure.addingFile', $zip->getStatusString()]
-                );
-            }
-            foreach ($this->packagedMedia as $packagedName => $mediaPath) {
-                if ($error = $this->fileTooLarge($mediaPath, $packagedName)) {
+                if ($error = $this->fileTooLarge($galleyPath, $galleyFilename)) {
                     return $this->discardZip($zip, $zipPath, $error);
                 }
-                if (!$zip->addFile($filesDir . '/' . $mediaPath, $packagedName)) {
+
+                if (!$zip->addFile($filesDir . '/' . $galleyPath, $galleyFilePath)) {
                     return $this->discardZip(
                         $zip,
                         $zipPath,
                         ['plugins.importexport.pmc.export.failure.addingFile', $zip->getStatusString()]
                     );
                 }
+                $pdfFilesFound++;
             }
 
-            $this->warnOfUnpackagedSupplementaryGalleys($publication);
+            // Add article XML to the zip. Modifying the document is what decides which of
+            // the publication's media files are packaged, and under what names, so the
+            // media files are added afterwards.
+            $document = $this->exportXML(
+                $object,
+                null,
+                $context,
+                $noValidation,
+                $exportErrors,
+                $articlePdfFilename,
+                $genres,
+                $nlmTitle,
+                $names['stem']
+            );
+            if (is_array($document)) {
+                return $this->discardZip($zip, $zipPath, $document);
+            } else {
+                $articlePathName = $names['stem'] . '.xml';
+                if (!$zip->addFromString($articlePathName, $document)) {
+                    return $this->discardZip(
+                        $zip,
+                        $zipPath,
+                        ['plugins.importexport.pmc.export.failure.addingFile', $zip->getStatusString()]
+                    );
+                }
+                foreach ($this->packagedMedia as $packagedName => $mediaPath) {
+                    if ($error = $this->fileTooLarge($mediaPath, $packagedName)) {
+                        return $this->discardZip($zip, $zipPath, $error);
+                    }
+                    if (!$zip->addFile($filesDir . '/' . $mediaPath, $packagedName)) {
+                        return $this->discardZip(
+                            $zip,
+                            $zipPath,
+                            ['plugins.importexport.pmc.export.failure.addingFile', $zip->getStatusString()]
+                        );
+                    }
+                }
 
-            $zipDetails = $names;
-            $zipDetails['filename'] = $names['package'];
-            $zipDetails['path'] = $zipPath;
+                $this->warnOfUnpackagedSupplementaryGalleys($publication);
 
-            // Files added from disk are only read now, so this is where reading them fails
-            if (!$zip->close()) {
-                $this->deleteTempFile($zipPath);
-                return ['error' => ['plugins.importexport.pmc.export.failure.creatingFile', $zip->getStatusString()]];
+                $zipDetails = $names;
+                $zipDetails['filename'] = $names['package'];
+                $zipDetails['path'] = $zipPath;
+
+                // Files added from disk are only read now, so this is where reading them fails
+                if (!$zip->close()) {
+                    $this->deleteTempFile($zipPath);
+                    return ['error' => ['plugins.importexport.pmc.export.failure.creatingFile', $zip->getStatusString()]];
+                }
             }
+            return $zipDetails;
+        } catch (Throwable $e) {
+            $this->discardZip($zip, $zipPath, []);
+            throw $e;
         }
-        return $zipDetails;
     }
 
     /**
@@ -967,7 +1141,7 @@ class PubmedCentralExportPlugin extends PubObjectsExportPlugin implements HasTas
                 : ['path' => $zipPackage['path']];
         }
 
-        $finalZipPath = tempnam(sys_get_temp_dir(), 'PubmedCentralExport_');
+        $finalZipPath = $this->createTempPath();
         $finalZip = new ZipArchive();
         // OVERWRITE avoids the "Using empty file as ZipArchive" deprecation that is
         // raised when opening the empty file tempnam() has already created.
@@ -978,39 +1152,44 @@ class PubmedCentralExportPlugin extends PubObjectsExportPlugin implements HasTas
         }
 
         $createdPaths = [];
-        foreach ($objects as $object) {
-            $zipPackage = $this->createZip($object, $context, $noValidation);
-            if (empty($zipPackage['path']) || empty($zipPackage['filename'])) {
-                $submissionId = $object instanceof Publication ? $object->getData('submissionId') : $object->getId();
-                $versionString = $object instanceof Publication ?
-                    $object->getData('versionString') :
-                    $object->getCurrentPublication()->getData('versionString');
-                $errorDetails = __('plugins.importexport.pmc.export.failure.submissionVersion', [
-                    'version' => $versionString,
-                    'submissionId' => $submissionId,
-                    'error' => $this->convertErrorMessage($zipPackage['error'])
-                ]);
-                return $this->discardZip(
-                    $finalZip,
-                    $finalZipPath,
-                    ['plugins.importexport.pmc.export.failure.creatingFile', $errorDetails],
-                    $createdPaths
-                );
+        try {
+            foreach ($objects as $object) {
+                $zipPackage = $this->createZip($object, $context, $noValidation);
+                if (empty($zipPackage['path']) || empty($zipPackage['filename'])) {
+                    $submissionId = $object instanceof Publication ? $object->getData('submissionId') : $object->getId();
+                    $versionString = $object instanceof Publication ?
+                        $object->getData('versionString') :
+                        $object->getCurrentPublication()->getData('versionString');
+                    $errorDetails = __('plugins.importexport.pmc.export.failure.submissionVersion', [
+                        'version' => $versionString,
+                        'submissionId' => $submissionId,
+                        'error' => $this->convertErrorMessage($zipPackage['error'])
+                    ]);
+                    return $this->discardZip(
+                        $finalZip,
+                        $finalZipPath,
+                        ['plugins.importexport.pmc.export.failure.creatingFile', $errorDetails],
+                        $createdPaths
+                    );
+                }
+                // Track the package before adding it so that it is cleaned up either way.
+                $createdPaths[] = $zipPackage['path'];
+                if (!$finalZip->addFile($zipPackage['path'], $zipPackage['filename'] . '.zip')) {
+                    return $this->discardZip(
+                        $finalZip,
+                        $finalZipPath,
+                        ['plugins.importexport.pmc.export.failure.creatingFile', $finalZip->getStatusString()],
+                        $createdPaths
+                    );
+                }
             }
-            // Track the package before adding it so that it is cleaned up either way.
-            $createdPaths[] = $zipPackage['path'];
-            if (!$finalZip->addFile($zipPackage['path'], $zipPackage['filename'] . '.zip')) {
-                return $this->discardZip(
-                    $finalZip,
-                    $finalZipPath,
-                    ['plugins.importexport.pmc.export.failure.creatingFile', $finalZip->getStatusString()],
-                    $createdPaths
-                );
-            }
+            // The added files are only read when the archive is closed, so the per-article
+            // packages cannot be removed before this point.
+            $finalZip->close();
+        } catch (Throwable $e) {
+            $this->discardZip($finalZip, $finalZipPath, [], $createdPaths);
+            throw $e;
         }
-        // The added files are only read when the archive is closed, so the per-article
-        // packages cannot be removed before this point.
-        $finalZip->close();
 
         foreach ($createdPaths as $createdPath) {
             $this->deleteTempFile($createdPath);
@@ -1029,6 +1208,19 @@ class PubmedCentralExportPlugin extends PubObjectsExportPlugin implements HasTas
         return app()->get('file')->fs->fileSize($path) > self::MAX_FILE_SIZE
             ? ['plugins.importexport.pmc.export.failure.fileTooLarge', $packagedName]
             : null;
+    }
+
+    /**
+     * A new temporary file for a package, in the installation's temporary files directory
+     * rather than the system's, as packages hold copies of the publication's files.
+     */
+    protected function createTempPath(): string
+    {
+        $exportPath = $this->getExportPath();
+        if (!is_dir($exportPath)) {
+            (new FileManager())->mkdirtree($exportPath);
+        }
+        return tempnam($exportPath, 'PubmedCentralExport_');
     }
 
     /**
@@ -1064,6 +1256,19 @@ class PubmedCentralExportPlugin extends PubObjectsExportPlugin implements HasTas
      */
     public function manage($args, $request): JSONMessage
     {
+        if ($request->getUserVar('verb') === 'clearHostKey') {
+            if (!$request->checkCSRF()) {
+                return new JSONMessage(false);
+            }
+            $this->clearRecordedHostKey($request->getContext()->getId());
+            (new NotificationManager())->createTrivialNotification(
+                $request->getUser()->getId(),
+                Notification::NOTIFICATION_TYPE_SUCCESS,
+                ['contents' => __('plugins.importexport.pmc.settings.form.clearHostKey.success')]
+            );
+            // Has the link action show the notification now, rather than on the next page load
+            return DAO::getDataChangedEvent();
+        }
         if ($request->getUserVar('verb') == 'settings') {
             $user = $request->getUser();
             $this->addLocaleData();
@@ -1243,13 +1448,22 @@ class PubmedCentralExportPlugin extends PubObjectsExportPlugin implements HasTas
     /**
      * Resolve the JATS 1.2 publishing DTD, and the modules it includes, to the copy
      * bundled with the application, so that validation does not depend on a request to
-     * jats.nlm.nih.gov. Any other document type is fetched as before.
+     * jats.nlm.nih.gov. Anything else is refused.
+     *
+     * @return ?string The file to load, or null to refuse the entity
      */
-    protected function resolveJatsEntity(?string $publicId, string $systemId): string
+    protected function resolveJatsEntity(?string $publicId, string $systemId): ?string
     {
-        return $this->isBundledJatsIdentifier($publicId, $systemId)
-            ? Core::getBaseDir() . self::JATS_12_DTD_PATH
-            : $systemId;
+        if ($this->isBundledJatsIdentifier($publicId, $systemId)) {
+            return Core::getBaseDir() . self::JATS_12_DTD_PATH;
+        }
+
+        // The modules the bundled DTD includes, which libxml resolves against its location.
+        // Anything else is refused, so that a document cannot have the server read other
+        // files or make requests while it is validated.
+        $dtdDirectory = realpath(dirname(Core::getBaseDir() . self::JATS_12_DTD_PATH));
+        $path = realpath(preg_replace('#^file://#', '', $systemId));
+        return $dtdDirectory && $path && str_starts_with($path, $dtdDirectory . DIRECTORY_SEPARATOR) ? $path : null;
     }
 
     /**
