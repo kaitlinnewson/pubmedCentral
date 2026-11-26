@@ -24,7 +24,9 @@ use APP\publication\Publication;
 use APP\submission\Repository as SubmissionRepository;
 use APP\submission\Submission;
 use APP\submissionFile\Repository as SubmissionFileRepository;
+use PKP\config\Config;
 use PKP\db\DAORegistry;
+use PKP\file\FileManager;
 use PKP\galley\Galley;
 use PKP\jats\JatsFile;
 use PKP\jats\Repository as JatsRepository;
@@ -46,6 +48,9 @@ use ZipArchive;
 #[CoversClass(PubmedCentralExportPlugin::class)]
 class PubmedCentralExportPluginTest extends PKPTestCase
 {
+    /** The stand-in files directory the packaged files are written to, if a test made one */
+    private ?string $filesDir = null;
+
     /**
      * A minimal JATS document. The xlink namespace is declared here because the
      * jatsTemplate plugin declares it on generated JATS. The journal-meta is
@@ -81,6 +86,9 @@ class PubmedCentralExportPluginTest extends PKPTestCase
         app()->forgetInstance(SubmissionFileRepository::class);
         app()->forgetInstance(JatsRepository::class);
         app()->forgetInstance('file');
+        if ($this->filesDir) {
+            (new FileManager())->rmtree($this->filesDir);
+        }
         parent::tearDown();
     }
 
@@ -178,8 +186,9 @@ class PubmedCentralExportPluginTest extends PKPTestCase
      * service resolving each file id to a path.
      *
      * @param array $paths [file id => path in the file store]
+     * @param array $sizes [path in the file store => size in bytes], for files not the default 1 kB
      */
-    private function bindMediaFiles(array $mediaFiles, array $paths): MockObject
+    private function bindMediaFiles(array $mediaFiles, array $paths, array $sizes = []): MockObject
     {
         $collector = $this->createMock(SubmissionFileCollector::class);
         foreach (['filterBySubmissionIds', 'filterByFileStages', 'filterByAssoc'] as $filter) {
@@ -191,17 +200,31 @@ class PubmedCentralExportPluginTest extends PKPTestCase
         $submissionFileRepository->method('getCollector')->willReturn($collector);
         app()->instance(SubmissionFileRepository::class, $submissionFileRepository);
 
-        // Stands in for the file store: resolves a file id to its path, and reads the
-        // bytes that get packaged
-        $fileService = new class ($paths) {
+        // The files are packaged from disk, so each one is written to a stand-in files directory
+        $this->filesDir ??= sys_get_temp_dir() . '/PmcTestFiles_' . uniqid();
+        $data = &Config::getData();
+        $data['files']['files_dir'] = $this->filesDir;
+        foreach ($paths as $path) {
+            if (!is_dir(dirname("{$this->filesDir}/{$path}"))) {
+                mkdir(dirname("{$this->filesDir}/{$path}"), 0777, true);
+            }
+            file_put_contents("{$this->filesDir}/{$path}", "contents of {$path}");
+        }
+
+        // Stands in for the file store: resolves a file id to its path, and reports its size
+        $fileService = new class ($paths, $sizes) {
             public object $fs;
 
-            public function __construct(private array $paths)
+            public function __construct(private array $paths, array $sizes)
             {
-                $this->fs = new class () {
-                    public function read(string $path): string
+                $this->fs = new class ($sizes) {
+                    public function __construct(private array $sizes)
                     {
-                        return "contents of {$path}";
+                    }
+
+                    public function fileSize(string $path): int
+                    {
+                        return $this->sizes[$path] ?? 1024;
                     }
                 };
             }
@@ -829,21 +852,48 @@ class PubmedCentralExportPluginTest extends PKPTestCase
      * @param SubmissionFile[] $mediaFiles
      * @param array $mediaPaths [file id => path in the file store] for the media files; ids
      *  12 and 13 are the PDF galley and the JATS
+     * @param array $sizes [path in the file store => size in bytes], for files not the default 1 kB
      *
-     * @return array [plugin, package]
+     * @param array $supplementaryGalleys Each as ['label', 'name', 'path', optional 'urlRemote']
+     *
+     * @return array [plugin, package, publication]
      */
     private function packageWithMedia(
         array $mediaFiles,
         array $mediaPaths,
         string $body,
         array $publicationData = [],
-        array $submissionData = []
+        array $submissionData = [],
+        array $sizes = [],
+        array $supplementaryGalleys = []
     ): array {
         $plugin = $this->createPlugin(['nlmTitle' => 'J Test', 'namingType' => 'articleNumber']);
 
+        // Supplementary galleys get submission file ids from 30 and file ids from 40
+        $submissionFiles = [];
+        $galleys = [];
+        $filePaths = [];
+        foreach (array_values($supplementaryGalleys) as $i => $supplementary) {
+            $supplementaryFile = new SubmissionFile();
+            $supplementaryFile->setData('genreId', 9);
+            $supplementaryFile->setData('fileId', 40 + $i);
+            $supplementaryFile->setData('name', ['en' => $supplementary['name']]);
+            $submissionFiles[30 + $i] = $supplementaryFile;
+            $filePaths[40 + $i] = $supplementary['path'];
+
+            $supplementaryGalley = new Galley();
+            $supplementaryGalley->setId(50 + $i);
+            $supplementaryGalley->setData('locale', 'en');
+            $supplementaryGalley->setData('label', $supplementary['label']);
+            $supplementaryGalley->setData('submissionFileId', 30 + $i);
+            $supplementaryGalley->setData('urlRemote', $supplementary['urlRemote'] ?? null);
+            $galleys[] = $supplementaryGalley;
+        }
+
         $submissionFileRepository = $this->bindMediaFiles(
             $mediaFiles,
-            [12 => 'journals/1/galley.pdf', 13 => 'journals/1/article.xml'] + $mediaPaths
+            [12 => 'journals/1/galley.pdf', 13 => 'journals/1/article.xml'] + $mediaPaths + $filePaths,
+            $sizes
         );
 
         // The PDF galley, and the uploaded JATS the document is read from
@@ -851,7 +901,9 @@ class PubmedCentralExportPluginTest extends PKPTestCase
         $galleyFile->setData('mimetype', 'application/pdf');
         $galleyFile->setData('genreId', 4);
         $galleyFile->setData('fileId', 12);
-        $submissionFileRepository->method('get')->willReturn($galleyFile);
+        $submissionFiles[21] = $galleyFile;
+        $submissionFileRepository->method('get')
+            ->willReturnCallback(fn (int $id) => $submissionFiles[$id] ?? null);
 
         $jatsSubmissionFile = new SubmissionFile();
         $jatsSubmissionFile->setData('fileId', 13);
@@ -865,9 +917,14 @@ class PubmedCentralExportPluginTest extends PKPTestCase
         $genre->setData('category', Genre::GENRE_CATEGORY_DOCUMENT);
         $genre->setData('supplementary', false);
         $genre->setData('dependent', false);
+        $supplementaryGenre = new Genre();
+        $supplementaryGenre->setData('category', Genre::GENRE_CATEGORY_SUPPLEMENTARY);
+        $supplementaryGenre->setData('supplementary', true);
+        $supplementaryGenre->setData('dependent', false);
         $genreDao = $this->createMock(GenreDAO::class);
         $genreDao->method('getEnabledByContextId')->willReturn(collect());
-        $genreDao->method('getById')->willReturn($genre);
+        $genreDao->method('getById')
+            ->willReturnCallback(fn (int $id) => $id === 9 ? $supplementaryGenre : $genre);
         DAORegistry::registerDAO('GenreDAO', $genreDao);
 
         // The collection year, which the package name is built from
@@ -882,14 +939,14 @@ class PubmedCentralExportPluginTest extends PKPTestCase
         $publication->setData('submissionId', 5);
         $publication->setData('locale', 'en');
         $publication->setData('articleNumber', 'e12345');
-        $publication->setData('galleys', [$galley]);
+        $publication->setData('galleys', [$galley, ...$galleys]);
         foreach ($publicationData as $name => $value) {
             $publication->setData($name, $value);
         }
 
         // Validation is exercised by the validateJats() tests; running the style checker
         // here would only make the packaging slow to test
-        return [$plugin, $plugin->createZip($publication, $this->createJournal(), true)];
+        return [$plugin, $plugin->createZip($publication, $this->createJournal(), true), $publication];
     }
 
     //
@@ -921,6 +978,8 @@ class PubmedCentralExportPluginTest extends PKPTestCase
         for ($i = 0; $i < $zip->numFiles; $i++) {
             $names[] = $zip->getNameIndex($i);
         }
+        $figure = $zip->getFromName('jtest-2025-e12345-g0000.tif');
+        $pdf = $zip->getFromName('jtest-2025-e12345.pdf');
         $zip->close();
         sort($names);
 
@@ -929,6 +988,8 @@ class PubmedCentralExportPluginTest extends PKPTestCase
             'jtest-2025-e12345.pdf',
             'jtest-2025-e12345.xml',
         ], $names);
+        $this->assertSame('contents of journals/1/figure1.tif', $figure);
+        $this->assertSame('contents of journals/1/galley.pdf', $pdf);
 
         unlink($package['path']);
     }
@@ -984,6 +1045,139 @@ class PubmedCentralExportPluginTest extends PKPTestCase
         ]);
 
         $this->assertSame(['error' => ['plugins.importexport.pmc.export.failure.incompleteHistory']], $package);
+    }
+
+    /**
+     * PMC accepts no file larger than 2 GB, so a package holding one is refused rather than delivered.
+     *
+     * @see https://pmc.ncbi.nlm.nih.gov/pub/filespec/
+     */
+    public function testCreateZipRefusesAMediaFileOverTheSizeLimit(): void
+    {
+        [, $package] = $this->packageWithMedia(
+            [$this->createMediaFile(1, 11, 'video.mp4')],
+            [11 => 'journals/1/video.mp4'],
+            '<supplementary-material id="SD1"><media xlink:href="video.mp4"/></supplementary-material>',
+            sizes: ['journals/1/video.mp4' => 2_000_000_001]
+        );
+
+        $this->assertSame(
+            ['error' => ['plugins.importexport.pmc.export.failure.fileTooLarge', 'jtest-2025-e12345-s0000.mp4']],
+            $package
+        );
+    }
+
+    public function testCreateZipRefusesAPdfOverTheSizeLimit(): void
+    {
+        [, $package] = $this->packageWithMedia(
+            [],
+            [],
+            '<p>Body</p>',
+            sizes: ['journals/1/galley.pdf' => 2_000_000_001]
+        );
+
+        $this->assertSame(
+            ['error' => ['plugins.importexport.pmc.export.failure.fileTooLarge', 'jtest-2025-e12345.pdf']],
+            $package
+        );
+    }
+
+    public function testCreateZipAcceptsAFileOfExactlyTheSizeLimit(): void
+    {
+        [, $package] = $this->packageWithMedia(
+            [$this->createMediaFile(1, 11, 'figure1.tif')],
+            [11 => 'journals/1/figure1.tif'],
+            '<fig id="f1"><graphic xlink:href="figure1.tif"/></fig>',
+            sizes: ['journals/1/figure1.tif' => 2_000_000_000]
+        );
+
+        $this->assertArrayNotHasKey('error', $package);
+        unlink($package['path']);
+    }
+
+    /**
+     * A supplementary galley the document refers to by file name is packaged like a media file.
+     */
+    public function testCreateZipPackagesAReferencedSupplementaryGalley(): void
+    {
+        [$plugin, $package] = $this->packageWithMedia(
+            [],
+            [],
+            '<supplementary-material id="SD1"><media xlink:href="dataset.xlsx"/></supplementary-material>',
+            supplementaryGalleys: [
+                ['label' => 'Data Set', 'name' => 'dataset.xlsx', 'path' => 'journals/1/dataset.xlsx'],
+            ]
+        );
+
+        $this->assertArrayNotHasKey('error', $package);
+
+        $zip = new ZipArchive();
+        $zip->open($package['path']);
+        $dataset = $zip->getFromName('jtest-2025-e12345-s0000.xlsx');
+        $xml = $zip->getFromName('jtest-2025-e12345.xml');
+        $zip->close();
+        unlink($package['path']);
+
+        $this->assertSame('contents of journals/1/dataset.xlsx', $dataset);
+        $this->assertSame(
+            'jtest-2025-e12345-s0000.xlsx',
+            $this->xpath($xml)->evaluate('string(//supplementary-material/media/@xlink:href)')
+        );
+        $this->assertSame([], $this->invoke($plugin, 'getValidationWarnings'));
+    }
+
+    /**
+     * PMC requires all supplementary material to be deposited or linked from the article,
+     * so a supplementary galley left out of the package is reported.
+     *
+     * @see https://pmc.ncbi.nlm.nih.gov/pub/filespec/
+     */
+    public function testCreateZipWarnsOfAnUnreferencedSupplementaryGalley(): void
+    {
+        [$plugin, $package, $publication] = $this->packageWithMedia(
+            [],
+            [],
+            '<p>Body</p>',
+            supplementaryGalleys: [
+                ['label' => 'Data Set', 'name' => 'dataset.xlsx', 'path' => 'journals/1/dataset.xlsx'],
+                ['label' => 'Video', 'name' => 'video.mp4', 'path' => 'journals/1/video.mp4', 'urlRemote' => 'https://example.org/video'],
+            ]
+        );
+
+        $this->assertArrayNotHasKey('error', $package);
+        unlink($package['path']);
+
+        $warnings = $this->invoke($plugin, 'getValidationWarnings');
+        $this->assertCount(1, $warnings);
+        $this->assertSame('plugins.importexport.pmc.export.warning.unpackagedSupplementaryGalleys', $warnings[0][0]);
+        // A remote galley has no file to package
+        $this->assertSame(
+            ["'Data Set' (dataset.xlsx)"],
+            $this->invoke($plugin, 'unpackagedSupplementaryGalleys', [$publication])
+        );
+    }
+
+    /**
+     * A media file keeps a name it shares with a supplementary galley.
+     */
+    public function testCreateZipPrefersAMediaFileOverASupplementaryGalleyOfTheSameName(): void
+    {
+        [, $package] = $this->packageWithMedia(
+            [$this->createMediaFile(1, 11, 'dataset.xlsx')],
+            [11 => 'journals/1/media-dataset.xlsx'],
+            '<supplementary-material id="SD1"><media xlink:href="dataset.xlsx"/></supplementary-material>',
+            supplementaryGalleys: [
+                ['label' => 'Data Set', 'name' => 'dataset.xlsx', 'path' => 'journals/1/galley-dataset.xlsx'],
+            ]
+        );
+
+        $zip = new ZipArchive();
+        $zip->open($package['path']);
+        $dataset = $zip->getFromName('jtest-2025-e12345-s0000.xlsx');
+        $zip->close();
+        unlink($package['path']);
+
+        $this->assertSame('contents of journals/1/media-dataset.xlsx', $dataset);
     }
 
     //
@@ -1242,7 +1436,7 @@ class PubmedCentralExportPluginTest extends PKPTestCase
         $this->assertStringNotContainsString('DTD Error', $result);
         $this->assertStringContainsString('PMC Style Check Error', $result);
         $this->assertSame(
-            ['plugins.importexport.pmc.export.warning.jatsVersionUnsupported'],
+            [['plugins.importexport.pmc.export.warning.jatsVersionUnsupported', null]],
             $this->invoke($plugin, 'getValidationWarnings')
         );
     }
@@ -1259,7 +1453,7 @@ class PubmedCentralExportPluginTest extends PKPTestCase
         $this->assertStringNotContainsString('DTD Error', $result);
         $this->assertStringContainsString('PMC Style Check Error', $result);
         $this->assertSame(
-            ['plugins.importexport.pmc.export.warning.jatsVersionUnsupported'],
+            [['plugins.importexport.pmc.export.warning.jatsVersionUnsupported', null]],
             $this->invoke($plugin, 'getValidationWarnings')
         );
     }

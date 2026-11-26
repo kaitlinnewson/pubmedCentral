@@ -32,6 +32,7 @@ use Exception;
 use League\Flysystem\Filesystem;
 use League\Flysystem\PhpseclibV3\SftpAdapter;
 use League\Flysystem\PhpseclibV3\SftpConnectionProvider;
+use PKP\config\Config;
 use PKP\context\Context;
 use PKP\core\Core;
 use PKP\core\JSONMessage;
@@ -57,6 +58,13 @@ class PubmedCentralExportPlugin extends PubObjectsExportPlugin implements HasTas
     protected const JATS_12_PUBLIC_ID = '-//NLM//DTD JATS (Z39.96) Journal Publishing DTD v1.2 20190208//EN';
     protected const JATS_12_SYSTEM_ID = 'http://jats.nlm.nih.gov/publishing/1.2/JATS-journalpublishing1.dtd';
     protected const JATS_12_DTD_PATH = '/dtd/jats/1.2/JATS-journalpublishing1.dtd';
+
+    /**
+     * The largest file PMC accepts, in bytes.
+     *
+     * @see https://pmc.ncbi.nlm.nih.gov/pub/filespec/
+     */
+    protected const MAX_FILE_SIZE = 2_000_000_000;
 
     /**
      * Message keys for conditions that do not stop an export but should still be
@@ -406,7 +414,82 @@ class PubmedCentralExportPlugin extends PubObjectsExportPlugin implements HasTas
             }
         }
 
+        // A media file keeps a name it shares with a supplementary galley
+        foreach ($this->getSupplementaryGalleyFiles($publication) as [, $galleyFile]) {
+            $path = $fileService->get($galleyFile->getData('fileId'))->path;
+            foreach ((array) $galleyFile->getData('name') as $name) {
+                $files[strtolower($name)] ??= $path;
+            }
+        }
+
         return $files;
+    }
+
+    /**
+     * The publication's galleys whose file type is marked as supplementary, other than
+     * remote galleys, which have no file to package.
+     *
+     * @return array<int, array{Galley, SubmissionFile}> Keyed by galley id
+     */
+    protected function getSupplementaryGalleyFiles(Publication $publication): array
+    {
+        $genreDao = DAORegistry::getDAO('GenreDAO'); /** @var GenreDAO $genreDao */
+        $files = [];
+        foreach ($publication->getData('galleys') ?? [] as $galley) { /** @var Galley $galley */
+            $submissionFileId = $galley->getData('submissionFileId');
+            if ($galley->getData('urlRemote') || !$submissionFileId) {
+                continue;
+            }
+            $galleyFile = Repo::submissionFile()->get((int) $submissionFileId);
+            if ($galleyFile && $genreDao->getById($galleyFile->getData('genreId'))?->getSupplementary()) {
+                $files[$galley->getId()] = [$galley, $galleyFile];
+            }
+        }
+        return $files;
+    }
+
+    /**
+     * Warn that supplementary galleys were left out of a package, because the document
+     * does not refer to them.
+     *
+     * PMC requires all supplementary material to be deposited with the article or linked
+     * from it to a public repository.
+     *
+     * @see https://pmc.ncbi.nlm.nih.gov/pub/filespec/
+     */
+    protected function warnOfUnpackagedSupplementaryGalleys(Publication $publication): void
+    {
+        if ($unpackaged = $this->unpackagedSupplementaryGalleys($publication)) {
+            $this->addValidationWarning(
+                'plugins.importexport.pmc.export.warning.unpackagedSupplementaryGalleys',
+                __('plugins.importexport.pmc.export.warning.unpackagedSupplementaryGalleys.detail', [
+                    'submissionId' => $publication->getData('submissionId'),
+                    'galleys' => implode(', ', $unpackaged),
+                ])
+            );
+        }
+    }
+
+    /**
+     * The supplementary galleys the package being built leaves out, each named by its
+     * label and file name.
+     *
+     * @return string[]
+     */
+    protected function unpackagedSupplementaryGalleys(Publication $publication): array
+    {
+        $fileService = app()->get('file');
+        $packagedPaths = array_values($this->packagedMedia);
+        $unpackaged = [];
+        foreach ($this->getSupplementaryGalleyFiles($publication) as [$galley, $galleyFile]) {
+            if (!in_array($fileService->get($galleyFile->getData('fileId'))->path, $packagedPaths, true)) {
+                // Not getLocalizedData(), which needs a request, and a deposit runs as a queued job
+                $names = (array) $galleyFile->getData('name');
+                $name = $names[$galley->getData('locale')] ?? reset($names);
+                $unpackaged[] = "'{$galley->getLabel()}' ({$name})";
+            }
+        }
+        return $unpackaged;
     }
 
     /**
@@ -720,6 +803,9 @@ class PubmedCentralExportPlugin extends PubObjectsExportPlugin implements HasTas
     public function createZip(Submission|Publication $object, Context $context, ?bool $noValidation = null): array
     {
         $fileService = app()->get('file');
+        // Files are added to the zip by path, so that they are streamed into it when it is
+        // written rather than held in memory
+        $filesDir = Config::getVar('files', 'files_dir');
         $nlmTitle = $this->nlmTitle($context);
         $genreDao = DAORegistry::getDAO('GenreDAO'); /** @var GenreDAO $genreDao */
         $genres = $genreDao->getEnabledByContextId($context->getId());
@@ -797,12 +883,11 @@ class PubmedCentralExportPlugin extends PubObjectsExportPlugin implements HasTas
                 );
             }
 
-            if (
-                !$zip->addFromString(
-                    $galleyFilePath,
-                    $fileService->fs->read($galleyPath)
-                )
-            ) {
+            if ($error = $this->fileTooLarge($galleyPath, $galleyFilename)) {
+                return $this->discardZip($zip, $zipPath, $error);
+            }
+
+            if (!$zip->addFile($filesDir . '/' . $galleyPath, $galleyFilePath)) {
                 return $this->discardZip(
                     $zip,
                     $zipPath,
@@ -838,7 +923,10 @@ class PubmedCentralExportPlugin extends PubObjectsExportPlugin implements HasTas
                 );
             }
             foreach ($this->packagedMedia as $packagedName => $mediaPath) {
-                if (!$zip->addFromString($packagedName, $fileService->fs->read($mediaPath))) {
+                if ($error = $this->fileTooLarge($mediaPath, $packagedName)) {
+                    return $this->discardZip($zip, $zipPath, $error);
+                }
+                if (!$zip->addFile($filesDir . '/' . $mediaPath, $packagedName)) {
                     return $this->discardZip(
                         $zip,
                         $zipPath,
@@ -847,10 +935,17 @@ class PubmedCentralExportPlugin extends PubObjectsExportPlugin implements HasTas
                 }
             }
 
+            $this->warnOfUnpackagedSupplementaryGalleys($publication);
+
             $zipDetails = $names;
             $zipDetails['filename'] = $names['package'];
             $zipDetails['path'] = $zipPath;
-            $zip->close();
+
+            // Files added from disk are only read now, so this is where reading them fails
+            if (!$zip->close()) {
+                $this->deleteTempFile($zipPath);
+                return ['error' => ['plugins.importexport.pmc.export.failure.creatingFile', $zip->getStatusString()]];
+            }
         }
         return $zipDetails;
     }
@@ -924,6 +1019,19 @@ class PubmedCentralExportPlugin extends PubObjectsExportPlugin implements HasTas
     }
 
     /**
+     * The error for a file larger than PMC accepts, or null when it is within the limit.
+     *
+     * Checked before the file is read, so that an oversized file is reported rather than
+     * exhausting memory.
+     */
+    protected function fileTooLarge(string $path, string $packagedName): ?array
+    {
+        return app()->get('file')->fs->fileSize($path) > self::MAX_FILE_SIZE
+            ? ['plugins.importexport.pmc.export.failure.fileTooLarge', $packagedName]
+            : null;
+    }
+
+    /**
      * Discard a partially built zip file and any temporary files collected for it,
      * returning the error for the caller.
      *
@@ -931,6 +1039,8 @@ class PubmedCentralExportPlugin extends PubObjectsExportPlugin implements HasTas
      */
     private function discardZip(ZipArchive $zip, string $zipPath, array $error, array $collectedPaths = []): array
     {
+        // Without this, closing would still read and write every file already added
+        $zip->unchangeAll();
         $zip->close();
         $this->deleteTempFile($zipPath);
         foreach ($collectedPaths as $collectedPath) {
@@ -1166,17 +1276,17 @@ class PubmedCentralExportPlugin extends PubObjectsExportPlugin implements HasTas
     /**
      * Record a condition that should be reported to the user without stopping the export.
      */
-    protected function addValidationWarning(string $messageKey): void
+    protected function addValidationWarning(string $messageKey, ?string $param = null): void
     {
-        $this->validationWarnings[$messageKey] = true;
+        $this->validationWarnings[$messageKey . "\0" . $param] = [$messageKey, $param];
     }
 
     /**
-     * @return string[] Message keys collected so far.
+     * @return array<array{string, ?string}> The message keys collected so far, each with its param.
      */
     protected function getValidationWarnings(): array
     {
-        return array_keys($this->validationWarnings);
+        return array_values($this->validationWarnings);
     }
 
     /**
@@ -1184,8 +1294,8 @@ class PubmedCentralExportPlugin extends PubObjectsExportPlugin implements HasTas
      */
     protected function sendValidationWarnings($request): void
     {
-        foreach ($this->getValidationWarnings() as $messageKey) {
-            $this->_sendNotification($request->getUser(), $messageKey, Notification::NOTIFICATION_TYPE_WARNING);
+        foreach ($this->getValidationWarnings() as [$messageKey, $param]) {
+            $this->_sendNotification($request->getUser(), $messageKey, Notification::NOTIFICATION_TYPE_WARNING, $param);
         }
         $this->validationWarnings = [];
     }

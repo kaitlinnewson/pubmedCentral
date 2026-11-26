@@ -3,7 +3,7 @@ msgstr "PubMed Central Export Plugin"
 
 msgid "plugins.importexport.pmc.description"
 msgstr ""
-"This plugin may be used to export your journal content to <a href=\"https://www.pmc.ncbi.nlm.nih.gov.org\" target=\"_blank\">PubMed Central</a>. "
+"This plugin may be used to export your journal content to <a href=\"https://pmc.ncbi.nlm.nih.gov\" target=\"_blank\">PubMed Central</a>. "
 "Content can be downloaded for later delivery to PubMed Central, or sent to your account on the PubMed Central server by "
 "configuring your credentials below. Only articles with an uploaded JATS XML file can be exported."
 
@@ -76,6 +76,11 @@ msgstr "Failed to open zip file: '{$param}'."
 msgid "plugins.importexport.pmc.export.failure.addingFile"
 msgstr "Unable to add file to PMC ZIP. The system returned an error: '{$param}'."
 
+msgid "plugins.importexport.pmc.export.failure.fileTooLarge"
+msgstr ""
+"'{$param}' is larger than the 2 GB PubMed Central accepts for a single file. Deposit "
+"the data in a public repository and cite it in the JATS XML instead, then try again."
+
 msgid "plugins.importexport.pmc.export.failure.jatsValidation"
 msgstr "JATS validation failed. The system returned validation errors: '{$param}'"
 
@@ -83,6 +88,18 @@ msgid "plugins.importexport.pmc.export.warning.jatsVersionUnsupported"
 msgstr ""
 "JATS validation is only supported for JATS 1.2. This document does not "
 "declare the JATS 1.2 DTD, so only the PMC style check was applied to it."
+
+msgid "plugins.importexport.pmc.export.warning.unpackagedSupplementaryGalleys"
+msgstr ""
+"{$param} PubMed Central requires all supplementary material to be deposited with the "
+"article, or linked from the JATS XML to a public repository. To deposit a supplementary "
+"galley, refer to its file name in the JATS XML, for example in a "
+"supplementary-material element."
+
+msgid "plugins.importexport.pmc.export.warning.unpackagedSupplementaryGalleys.detail"
+msgstr ""
+"Submission {$submissionId}: the supplementary galleys {$galleys} were not included in "
+"the package, because the JATS XML does not refer to them by file name."
 
 msgid "plugins.importexport.pmc.export.failure.xslTransform"
 msgstr "Unable to transform XSL for style checking."
@@ -187,16 +204,17 @@ msgstr "{$publications} publications and {$submissions} submissions were updated
 
 msgid "plugins.importexport.pmc.export.failure.missingMediaFile"
 msgstr ""
-"A file referenced in the JATS XML could not be matched to the publication's media files. {$param} "
-"Remove the reference from the JATS, or upload the file to the publication's media files, and try again."
+"A file referenced in the JATS XML could not be matched to the publication's media files or "
+"supplementary galleys. {$param} Remove the reference from the JATS, or upload the file to the "
+"publication's media files, and try again."
 
 msgid "plugins.importexport.pmc.export.failure.missingMediaFile.available"
 msgstr ""
-"'{$reference}' does not match any of the media files available: {$files}."
+"'{$reference}' does not match any of the files available: {$files}."
 
 msgid "plugins.importexport.pmc.export.failure.missingMediaFile.none"
 msgstr ""
-"'{$reference}' was referenced, but the publication has no media files."
+"'{$reference}' was referenced, but the publication has no media files or supplementary galleys."
 
 msgid "plugins.importexport.pmc.settings.form.automaticRegistration.description"
 msgstr ""

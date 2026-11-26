@@ -63,6 +63,23 @@ Supplementary material is the one reference that may be removed rather than pack
 pointing at a URL once the media files are resolved is dropped. Supplementary material naming a media file is packaged
 and deposited like any other reference.
 
+### Supplementary Galleys
+
+Galleys whose file type is marked as supplementary (for example Data Set or Research Materials) can be referenced from
+the JATS XML by file name in the same way as media files, for example
+`<supplementary-material id="SD1"><media xlink:href="dataset.xlsx"/></supplementary-material>`. A referenced galley file
+is packaged and renamed like any other media file. Where a media file and a supplementary galley share a name, the
+media file is used. Remote galleys have no file to package; link to them from the JATS XML instead.
+
+PubMed Central requires all supplementary material to be deposited with the article or linked from the JATS XML to a
+public repository, so the plugin warns when a supplementary galley is not packaged because the XML does not refer to
+it by file name.
+
+### File Size
+
+PubMed Central accepts no file larger than 2 GB, so the export stops if the PDF or a referenced file is larger. Deposit
+data of that size in a public repository and cite it in the JATS XML instead.
+
 For more details about PubMed Central requirements, refer to the
 [PubMed Central minimum data requirements](https://pmc.ncbi.nlm.nih.gov/pub/min_requirements/) and the
 [PubMed Central Tagging Guidelines](https://pmc.ncbi.nlm.nih.gov/tagging-guidelines/article/style/).
